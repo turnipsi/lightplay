@@ -14,8 +14,19 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <err.h>
+#include <sndio.h>
+#include <stdio.h>
+
 int
 main(void)
 {
+	struct mio_hdl *mididev;
+
+	if ((mididev = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL)
+		errx(1, "could not open midi device");
+
+	mio_close(mididev);
+
 	return 0;
 }
