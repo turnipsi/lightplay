@@ -18,6 +18,9 @@
 #include <sndio.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
+
+int	do_sequencing(FILE *, struct mio_hdl *);
 
 int
 main(int argc, char *argv[])
@@ -25,6 +28,7 @@ main(int argc, char *argv[])
 	FILE *midifile;
 	const char *midifile_path;
 	struct mio_hdl *mididev;
+	int ret;
 
 	if (argc != 2) {
 		fprintf(stderr, "Usage: lightplay midifile\n");
@@ -38,10 +42,21 @@ main(int argc, char *argv[])
 	if ((mididev = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL)
 		errx(1, "could not open midi device");
 
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
+	ret = do_sequencing(midifile, mididev);
+
 	mio_close(mididev);
 
 	if (fclose(midifile) == EOF)
 		warn("could not close midi file");
 
+	return ret;
+}
+
+int
+do_sequencing(FILE *midifile, struct mio_hdl *mididev)
+{
 	return 0;
 }
