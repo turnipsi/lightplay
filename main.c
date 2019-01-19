@@ -16,17 +16,32 @@
 
 #include <err.h>
 #include <sndio.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 int
-main(void)
+main(int argc, char *argv[])
 {
+	FILE *midifile;
+	const char *midifile_path;
 	struct mio_hdl *mididev;
+
+	if (argc != 2) {
+		fprintf(stderr, "Usage: lightplay midifile\n");
+		exit(1);
+	}
+	midifile_path = argv[1];
+
+	if ((midifile = fopen(midifile_path, "r")) == NULL)
+		err(1, "could not open midi file \"%s\"", midifile_path);
 
 	if ((mididev = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL)
 		errx(1, "could not open midi device");
 
 	mio_close(mididev);
+
+	if (fclose(midifile) == EOF)
+		warn("could not close midi file");
 
 	return 0;
 }
