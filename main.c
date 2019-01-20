@@ -14,13 +14,16 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <arpa/inet.h>
 #include <err.h>
 #include <sndio.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 int	do_sequencing(FILE *, struct mio_hdl *);
+int	parse_standard_midi_file(FILE *);
 
 int
 main(int argc, char *argv[])
@@ -58,5 +61,60 @@ main(int argc, char *argv[])
 int
 do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 {
+	int ret;
+
+	ret = parse_standard_midi_file(midifile);
+
+	return ret;
+}
+
+int
+parse_standard_midi_file(FILE *midifile)
+{
+	char mthd[5];
+	uint32_t six;
+	uint16_t format, track_count, ticks_pqn;
+
+	if (fscanf(midifile, "%4s", mthd) != 1) {
+		warnx("could not read header, not a standard midi file?");
+		return 1;
+	}
+	if (strcmp(mthd, "MThd") != 0) {
+		warnx("track header not found, not a standard midi file?");
+		return 1;
+	}
+
+	if (fread(&six, sizeof(six), 1, midifile) != 1) {
+		warnx("could not read number six from header");
+		return 1;
+	}
+	six = ntohl(six);
+	if (six != 6) {
+		warnx("invalid midi track header");
+		return 1;
+	}
+
+	if (fread(&format, sizeof(format), 1, midifile) != 1) {
+		warnx("could not read midi file format");
+		return 1;
+	}
+	format = ntohs(format);
+	if (format != 1) {
+		warnx("only standard midi file format 1 is supported");
+		return 1;
+	}
+
+	if (fread(&track_count, sizeof(track_count), 1, midifile) != 1) {
+		warnx("could not read midi track count");
+		return 1;
+	}
+	track_count = ntohs(track_count);
+
+	if (fread(&ticks_pqn, sizeof(ticks_pqn), 1, midifile) != 1) {
+		warnx("could not read tick per quarter note");
+		return 1;
+	}
+	ticks_pqn = ntohs(ticks_pqn);
+
 	return 0;
 }
