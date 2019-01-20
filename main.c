@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 int	do_sequencing(FILE *, struct mio_hdl *);
+int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *);
 
 int
@@ -71,9 +72,22 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 int
 parse_standard_midi_file(FILE *midifile)
 {
+	uint16_t track_count, ticks_pqn;
+	int r;
+
+	if ((r = parse_smf_header(midifile, &track_count, &ticks_pqn)) != 0)
+		return r;
+
+	return 0;
+}
+
+int
+parse_smf_header(FILE *midifile, uint16_t *track_count,
+    uint16_t *ticks_pqn)
+{
 	char mthd[5];
 	uint32_t six;
-	uint16_t format, track_count, ticks_pqn;
+	uint16_t format, _track_count, _ticks_pqn;
 
 	if (fscanf(midifile, "%4s", mthd) != 1) {
 		warnx("could not read header, not a standard midi file?");
@@ -104,17 +118,20 @@ parse_standard_midi_file(FILE *midifile)
 		return 1;
 	}
 
-	if (fread(&track_count, sizeof(track_count), 1, midifile) != 1) {
+	if (fread(&_track_count, sizeof(_track_count), 1, midifile) != 1) {
 		warnx("could not read midi track count");
 		return 1;
 	}
-	track_count = ntohs(track_count);
+	_track_count = ntohs(_track_count);
 
-	if (fread(&ticks_pqn, sizeof(ticks_pqn), 1, midifile) != 1) {
+	if (fread(&_ticks_pqn, sizeof(_ticks_pqn), 1, midifile) != 1) {
 		warnx("could not read tick per quarter note");
 		return 1;
 	}
-	ticks_pqn = ntohs(ticks_pqn);
+	_ticks_pqn = ntohs(_ticks_pqn);
+
+	*track_count = _track_count;
+	*ticks_pqn = _ticks_pqn;
 
 	return 0;
 }
