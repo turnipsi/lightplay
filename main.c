@@ -23,8 +23,10 @@
 #include <unistd.h>
 
 int	do_sequencing(FILE *, struct mio_hdl *);
+int	get_next_delta_time(FILE *, uint32_t *);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *);
+int	parse_track(FILE *);
 
 int
 main(int argc, char *argv[])
@@ -65,6 +67,10 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 	int ret;
 
 	ret = parse_standard_midi_file(midifile);
+	if (ret != 0)
+		return ret;
+
+	ret = parse_track(midifile);
 
 	return ret;
 }
@@ -94,7 +100,7 @@ parse_smf_header(FILE *midifile, uint16_t *track_count,
 		return 1;
 	}
 	if (strcmp(mthd, "MThd") != 0) {
-		warnx("track header not found, not a standard midi file?");
+		warnx("midi file header not found, not a standard midi file?");
 		return 1;
 	}
 
@@ -134,4 +140,63 @@ parse_smf_header(FILE *midifile, uint16_t *track_count,
 	*ticks_pqn = _ticks_pqn;
 
 	return 0;
+}
+
+int
+parse_track(FILE *midifile)
+{
+	char mtrk[5];
+	uint32_t track_bytes, current_byte;
+	uint16_t current_ticks;
+	int delta_time;
+
+	if (fscanf(midifile, "%4s", mtrk) != 1) {
+		warnx("could not read track header");
+		return 1;
+	}
+	if (strcmp(mtrk, "MTrk") != 0) {
+		warnx("track header not found");
+		return 1;
+	}
+	if (fread(&track_bytes, sizeof(track_bytes), 1, midifile) != 1) {
+		warnx("could not read number of bytes in midi track");
+		return 1;
+	}
+	track_bytes = ntohl(track_bytes);
+
+	current_byte = 0;
+	while (current_byte < track_bytes) {
+		current_ticks = 0;
+
+		/* XXX should check out the next event type instead of
+		 * XXX presuming something */
+		delta_time = get_next_delta_time(midifile, &current_byte);
+		if (delta_time < 0)
+			return 1;
+	}
+
+	return 0;
+}
+
+int
+get_next_delta_time(FILE *midifile, uint32_t *current_byte)
+{
+	uint8_t dt_bytes[4] = { 0, 0, 0, 0 };
+	ssize_t i;
+
+	for (i = 3; i >= 0; i--) {
+		if (fread(&dt_bytes[i], sizeof(uint8_t), 1, midifile) != 1) {
+			warnx("could not read next tick, short file?");
+			return -1;
+		}
+		(*current_byte)++;
+		if ((dt_bytes[i] & 0x80) == 0)
+			break;
+	}
+
+	return
+	      (dt_bytes[0] & 0x7f << 21)
+	    + (dt_bytes[1] & 0x7f << 14)
+	    + (dt_bytes[2] & 0x7f << 7)
+	    + (dt_bytes[3] & 0x7f << 0);
 }
