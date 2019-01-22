@@ -137,6 +137,11 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 		return 1;
 	}
 	_ticks_pqn = ntohs(_ticks_pqn);
+	if (_ticks_pqn & 0x8000) {
+		/* XXX might be nice to support this as well */
+		warnx("SMPTE-style delta-time units not supported\n");
+		return 1;
+	}
 
 	if (fseek(midifile, hdr_length - 6, SEEK_CUR) == -1) {
 		warnx("could not seek over header chunk");
