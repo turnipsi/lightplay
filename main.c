@@ -26,7 +26,7 @@ int	do_sequencing(FILE *, struct mio_hdl *);
 int	get_next_delta_time(FILE *, uint32_t *);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *);
-int	parse_track(FILE *);
+int	parse_next_track(FILE *);
 
 int
 main(int argc, char *argv[])
@@ -67,10 +67,6 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 	int ret;
 
 	ret = parse_standard_midi_file(midifile);
-	if (ret != 0)
-		return ret;
-
-	ret = parse_track(midifile);
 
 	return ret;
 }
@@ -79,12 +75,19 @@ int
 parse_standard_midi_file(FILE *midifile)
 {
 	uint16_t track_count, ticks_pqn;
-	int r;
+	int i, r;
 
 	if ((r = parse_smf_header(midifile, &track_count, &ticks_pqn)) != 0)
 		return r;
 
-	return 0;
+	for (i = 0; i < track_count; i++) {
+		/* XXX to what structure tracks should be parsed? */
+		r = parse_next_track(midifile);
+		if (r != 0)
+			return r;
+	}
+
+	return r;
 }
 
 int
@@ -147,26 +150,34 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 }
 
 int
-parse_track(FILE *midifile)
+parse_next_track(FILE *midifile)
 {
 	char mtrk[5];
 	uint32_t track_bytes, current_byte;
 	uint16_t current_ticks;
-	int delta_time;
+	int delta_time, track_found;
 
-	if (fscanf(midifile, "%4s", mtrk) != 1) {
-		warnx("could not read track header");
-		return 1;
+	track_found = 0;
+	while (!track_found) {
+		if (fscanf(midifile, "%4s", mtrk) != 1) {
+			warnx("could not read next chunk");
+			return 1;
+		}
+		if (strcmp(mtrk, "MTrk") == 0)
+			track_found = 1;
+		if (fread(&track_bytes, sizeof(track_bytes), 1, midifile)
+		    != 1) {
+			warnx("could not read number of bytes in midi chunk");
+			return 1;
+		}
+		track_bytes = ntohl(track_bytes);
+		if (!track_found) {
+			if (fseek(midifile, track_bytes, SEEK_CUR) == -1) {
+				warnx("could not seek over header chunk");
+				return 1;
+			}
+		}
 	}
-	if (strcmp(mtrk, "MTrk") != 0) {
-		warnx("track header not found");
-		return 1;
-	}
-	if (fread(&track_bytes, sizeof(track_bytes), 1, midifile) != 1) {
-		warnx("could not read number of bytes in midi track");
-		return 1;
-	}
-	track_bytes = ntohl(track_bytes);
 
 	current_byte = 0;
 	while (current_byte < track_bytes) {
