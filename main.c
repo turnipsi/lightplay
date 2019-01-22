@@ -88,11 +88,10 @@ parse_standard_midi_file(FILE *midifile)
 }
 
 int
-parse_smf_header(FILE *midifile, uint16_t *track_count,
-    uint16_t *ticks_pqn)
+parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 {
 	char mthd[5];
-	uint32_t six;
+	uint32_t hdr_length;
 	uint16_t format, _track_count, _ticks_pqn;
 
 	if (fscanf(midifile, "%4s", mthd) != 1) {
@@ -104,13 +103,13 @@ parse_smf_header(FILE *midifile, uint16_t *track_count,
 		return 1;
 	}
 
-	if (fread(&six, sizeof(six), 1, midifile) != 1) {
-		warnx("could not read number six from header");
+	if (fread(&hdr_length, sizeof(hdr_length), 1, midifile) != 1) {
+		warnx("could not header length");
 		return 1;
 	}
-	six = ntohl(six);
-	if (six != 6) {
-		warnx("invalid midi track header");
+	hdr_length = ntohl(hdr_length);
+	if (hdr_length < 6) {
+		warnx("midi header length too short");
 		return 1;
 	}
 
@@ -135,6 +134,11 @@ parse_smf_header(FILE *midifile, uint16_t *track_count,
 		return 1;
 	}
 	_ticks_pqn = ntohs(_ticks_pqn);
+
+	if (fseek(midifile, hdr_length - 6, SEEK_CUR) == -1) {
+		warnx("could not seek over header chunk");
+		return 1;
+	}
 
 	*track_count = _track_count;
 	*ticks_pqn = _ticks_pqn;
