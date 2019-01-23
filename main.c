@@ -22,8 +22,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#define F0_SYSEX_EVENT 0xf0
+#define F7_SYSEX_EVENT 0xf7
+#define FF_META_EVENT  0xff
+
 int	do_sequencing(FILE *, struct mio_hdl *);
-int	get_next_delta_time(FILE *, uint32_t *);
+int	get_next_variable_length_quantity(FILE *, uint32_t *);
+int	get_next_midi_event(FILE *, uint32_t *);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *);
 int	parse_next_track(FILE *);
@@ -77,13 +82,13 @@ parse_standard_midi_file(FILE *midifile)
 	uint16_t track_count, ticks_pqn;
 	int i, r;
 
-	if ((r = parse_smf_header(midifile, &track_count, &ticks_pqn)) != 0)
+	if ((r = parse_smf_header(midifile, &track_count, &ticks_pqn)) == -1)
 		return r;
 
 	for (i = 0; i < track_count; i++) {
 		/* XXX to what structure tracks should be parsed? */
 		r = parse_next_track(midifile);
-		if (r != 0)
+		if (r == -1)
 			return r;
 	}
 
@@ -99,53 +104,53 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 
 	if (fscanf(midifile, "%4s", mthd) != 1) {
 		warnx("could not read header, not a standard midi file?");
-		return 1;
+		return -1;
 	}
 	if (strcmp(mthd, "MThd") != 0) {
 		warnx("midi file header not found, not a standard midi file?");
-		return 1;
+		return -1;
 	}
 
 	if (fread(&hdr_length, sizeof(hdr_length), 1, midifile) != 1) {
 		warnx("could not header length");
-		return 1;
+		return -1;
 	}
 	hdr_length = ntohl(hdr_length);
 	if (hdr_length < 6) {
 		warnx("midi header length too short");
-		return 1;
+		return -1;
 	}
 
 	if (fread(&format, sizeof(format), 1, midifile) != 1) {
 		warnx("could not read midi file format");
-		return 1;
+		return -1;
 	}
 	format = ntohs(format);
 	if (format != 1) {
 		warnx("only standard midi file format 1 is supported");
-		return 1;
+		return -1;
 	}
 
 	if (fread(&_track_count, sizeof(_track_count), 1, midifile) != 1) {
 		warnx("could not read midi track count");
-		return 1;
+		return -1;
 	}
 	_track_count = ntohs(_track_count);
 
 	if (fread(&_ticks_pqn, sizeof(_ticks_pqn), 1, midifile) != 1) {
 		warnx("could not read tick per quarter note");
-		return 1;
+		return -1;
 	}
 	_ticks_pqn = ntohs(_ticks_pqn);
 	if (_ticks_pqn & 0x8000) {
 		/* XXX might be nice to support this as well */
 		warnx("SMPTE-style delta-time units not supported\n");
-		return 1;
+		return -1;
 	}
 
 	if (fseek(midifile, hdr_length - 6, SEEK_CUR) == -1) {
 		warnx("could not seek over header chunk");
-		return 1;
+		return -1;
 	}
 
 	*track_count = _track_count;
@@ -159,64 +164,111 @@ parse_next_track(FILE *midifile)
 {
 	char mtrk[5];
 	uint32_t track_bytes, current_byte;
-	uint16_t current_ticks;
 	int delta_time, track_found;
 
 	track_found = 0;
 	while (!track_found) {
 		if (fscanf(midifile, "%4s", mtrk) != 1) {
 			warnx("could not read next chunk");
-			return 1;
+			return -1;
 		}
 		if (strcmp(mtrk, "MTrk") == 0)
 			track_found = 1;
 		if (fread(&track_bytes, sizeof(track_bytes), 1, midifile)
 		    != 1) {
 			warnx("could not read number of bytes in midi chunk");
-			return 1;
+			return -1;
 		}
 		track_bytes = ntohl(track_bytes);
 		if (!track_found) {
 			if (fseek(midifile, track_bytes, SEEK_CUR) == -1) {
 				warnx("could not seek over header chunk");
-				return 1;
+				return -1;
 			}
 		}
 	}
 
 	current_byte = 0;
 	while (current_byte < track_bytes) {
-		current_ticks = 0;
-
-		/* XXX should check out the next event type instead of
-		 * XXX presuming something */
-		delta_time = get_next_delta_time(midifile, &current_byte);
-		if (delta_time < 0)
-			return 1;
+		/* XXX this should return something
+		 * XXX and we should do something */
+		if (get_next_midi_event(midifile, &current_byte) == -1)
+			return -1;
 	}
 
 	return 0;
 }
 
 int
-get_next_delta_time(FILE *midifile, uint32_t *current_byte)
+get_next_variable_length_quantity(FILE *midifile, uint32_t *current_byte)
 {
-	uint8_t dt_bytes[4] = { 0, 0, 0, 0 };
+	uint8_t vlq_bytes[4] = { 0, 0, 0, 0 };
 	ssize_t i;
 
 	for (i = 3; i >= 0; i--) {
-		if (fread(&dt_bytes[i], sizeof(uint8_t), 1, midifile) != 1) {
-			warnx("could not read next tick, short file?");
+		if (fread(&vlq_bytes[i], sizeof(uint8_t), 1, midifile) != 1) {
+			warnx("could not read next variable length quantity,"
+			    " short file?");
 			return -1;
 		}
 		(*current_byte)++;
-		if ((dt_bytes[i] & 0x80) == 0)
+		if ((vlq_bytes[i] & 0x80) == 0)
 			break;
 	}
 
 	return
-	      (dt_bytes[0] & 0x7f << 21)
-	    + (dt_bytes[1] & 0x7f << 14)
-	    + (dt_bytes[2] & 0x7f << 7)
-	    + (dt_bytes[3] & 0x7f << 0);
+	      (vlq_bytes[0] & 0x7f << 21)
+	    + (vlq_bytes[1] & 0x7f << 14)
+	    + (vlq_bytes[2] & 0x7f << 7)
+	    + (vlq_bytes[3] & 0x7f << 0);
+}
+
+int
+get_next_midi_event(FILE *midifile, uint32_t *current_byte)
+{
+	uint8_t midievent[3];
+	int delta_time, event_length;
+
+	delta_time = get_next_variable_length_quantity(midifile, current_byte);
+	if (delta_time < 0)
+		return -1;
+
+	if (fread(&midievent[0], sizeof(uint8_t), 1, midifile) != 1) {
+		warnx("could not read next midi event type, short file?");
+		return -1;
+	}
+	(*current_byte)++;
+
+	if (midievent[0] == F0_SYSEX_EVENT
+	    || midievent[0] == F7_SYSEX_EVENT
+	    || midievent[0] == FF_META_EVENT) {
+		if (midievent[0] == FF_META_EVENT) {
+			if (fread(&midievent[1], sizeof(uint8_t), 1, midifile)
+			    != 1) {
+				warnx("could not read next meta event type,"
+				    " short file?");
+				return -1;
+			}
+			(*current_byte)++;
+		}
+
+		event_length = get_next_variable_length_quantity(midifile,
+		    current_byte);
+		if (event_length < 0)
+			return -1;
+		if (fseek(midifile, event_length, SEEK_CUR) == -1) {
+			warnx("could not seek over sysex/meta event");
+			return -1;
+		}
+		*current_byte += event_length;
+		return 0;
+	}
+
+	if (fread(&midievent[1], sizeof(uint8_t), 2, midifile) != 2) {
+		warnx("could not read next midi event, short file?");
+		return -1;
+	}
+	*current_byte += 2;
+
+	return 0;
 }
