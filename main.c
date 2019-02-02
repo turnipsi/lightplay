@@ -16,11 +16,13 @@
 
 #include <arpa/inet.h>
 #include <err.h>
+#include <math.h>
 #include <sndio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define F0_SYSEX_EVENT 0xf0
@@ -30,7 +32,7 @@
 #define DEFAULT_MIDIEVENTS_SIZE 1024
 
 struct midievent {
-	int	delta_time;
+	float	pos;		/* absolute event position in seconds */
 	uint8_t	midievent[3];
 };
 
@@ -40,13 +42,15 @@ struct midievent_buffer {
 	size_t			 event_count;
 };
 
+int	compare_midievent_positions(const void *, const void *);
 int	do_sequencing(FILE *, struct mio_hdl *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
-int	get_next_note_event(FILE *, uint32_t *, struct midievent *,
+int	get_next_note_event(FILE *, uint32_t *, struct midievent *, float *,
     uint16_t *);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
-int	parse_standard_midi_file(FILE *);
+int	parse_standard_midi_file(FILE *, struct midievent_buffer *);
 int	parse_next_track(FILE *, struct midievent_buffer *, uint16_t *);
+int	playback_midievents(struct mio_hdl *, struct midievent_buffer *);
 
 int
 main(int argc, char *argv[])
@@ -84,22 +88,8 @@ main(int argc, char *argv[])
 int
 do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 {
-	int ret;
-
-	ret = parse_standard_midi_file(midifile);
-
-	return ret;
-}
-
-int
-parse_standard_midi_file(FILE *midifile)
-{
 	struct midievent_buffer me_buffer;
-	uint16_t track_count, ticks_pqn;
-	int i, r;
-
-	if ((r = parse_smf_header(midifile, &track_count, &ticks_pqn)) == -1)
-		return r;
+	int ret;
 
 	me_buffer.events = calloc(DEFAULT_MIDIEVENTS_SIZE,
 	    sizeof(struct midievent));
@@ -110,16 +100,55 @@ parse_standard_midi_file(FILE *midifile)
 	me_buffer.allocated_size = DEFAULT_MIDIEVENTS_SIZE;
 	me_buffer.event_count = 0;
 
-	for (i = 0; i < track_count; i++) {
-		r = parse_next_track(midifile, &me_buffer, &ticks_pqn);
-		if (r == -1)
-			goto out;
+	ret = parse_standard_midi_file(midifile, &me_buffer);
+	if (ret == -1)
+		goto out;
+
+	/* sort playback events by position, must be stable sort */
+	/* XXX error handling? */
+	ret = mergesort(me_buffer.events, me_buffer.event_count,
+	   sizeof(struct midievent), compare_midievent_positions);
+	if (ret == -1) {
+		warn("error in sorting midi event positions");
+		goto out;
 	}
+
+	ret = playback_midievents(mididev, &me_buffer);
 
 out:
 	free(me_buffer.events);
 
-	return r;
+	return ret;
+}
+
+int
+compare_midievent_positions(const void *_a, const void *_b)
+{
+	const struct midievent *a, *b;
+
+	a = _a;
+	b = _b;
+
+	return (a->pos < b->pos) ? -1 :
+	       (a->pos > b->pos) ?  1 : 0;
+}
+
+int
+parse_standard_midi_file(FILE *midifile, struct midievent_buffer *me_buffer)
+{
+	uint16_t track_count, ticks_pqn;
+	int i, ret;
+
+	if ((ret = parse_smf_header(midifile, &track_count, &ticks_pqn)) == -1)
+		return ret;
+
+	for (i = 0; i < track_count; i++) {
+		ret = parse_next_track(midifile, me_buffer, &ticks_pqn);
+		if (ret == -1)
+			return ret;
+	}
+
+	return ret;
 }
 
 int
@@ -174,6 +203,10 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 		warnx("SMPTE-style delta-time units not supported\n");
 		return -1;
 	}
+	if (_ticks_pqn == 0) {
+		warnx("ticks per quarter note is zero");
+		return -1;
+	}
 
 	if (fseek(midifile, hdr_length - 6, SEEK_CUR) == -1) {
 		warnx("could not seek over header chunk");
@@ -193,8 +226,9 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer,
 	char mtrk[5];
 	struct midievent midievent;
 	struct midievent *new_events;
+	float pos;
 	uint32_t track_bytes, current_byte;
-	int delta_time, track_found, r;
+	int delta_time, track_found, ret;
 
 	track_found = 0;
 	while (!track_found) {
@@ -218,13 +252,15 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer,
 		}
 	}
 
+	pos = 0.0;
 	current_byte = 0;
+
 	while (current_byte < track_bytes) {
-		r = get_next_note_event(midifile, &current_byte, &midievent,
-		    ticks_pqn);
-		if (r == -1)
+		ret = get_next_note_event(midifile, &current_byte, &midievent,
+		    &pos, ticks_pqn);
+		if (ret == -1)
 			return -1;
-		if (r == 0)
+		if (ret == 0)
 			continue;
 
 		if (me_buffer->event_count >= me_buffer->allocated_size) {
@@ -281,7 +317,7 @@ get_next_variable_length_quantity(FILE *midifile, uint32_t *current_byte)
  */
 int
 get_next_note_event(FILE *midifile, uint32_t *current_byte,
-    struct midievent *midievent, uint16_t *ticks_pqn)
+    struct midievent *midievent, float *pos, uint16_t *ticks_pqn)
 {
 	uint8_t raw_midievent[3];
 	int delta_time, event_length;
@@ -329,10 +365,53 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 	}
 	*current_byte += 2;
 
-	midievent->delta_time = delta_time;
+	/* XXX correct formulae is?
+	   XXX should lookup tempo information from the tempo map?
+	   XXX or does it matter considering the actual plan ? */
+	*pos += 120.0 * delta_time / *ticks_pqn;
+
+	midievent->pos = *pos;
 	midievent->midievent[0] = raw_midievent[0];
 	midievent->midievent[1] = raw_midievent[1];
 	midievent->midievent[2] = raw_midievent[2];
 
 	return 1;
+}
+
+int
+playback_midievents(struct mio_hdl *mididev,
+    struct midievent_buffer *me_buffer)
+{
+	struct midievent me;
+	struct timespec timeout, remainder;
+	float current_pos, next_event_pos, pos_difference;
+	size_t i, r;
+
+	current_pos = 0.0;
+
+	for (i = 0; i < me_buffer->event_count; i++) {
+		me = me_buffer->events[i];
+		next_event_pos = me.pos;
+		pos_difference = next_event_pos - current_pos;
+
+		if (pos_difference >= 0.00001) {
+			timeout.tv_sec = floor(pos_difference);
+			timeout.tv_nsec =
+			    1000000000 * (pos_difference - timeout.tv_sec);
+			if (nanosleep(&timeout, &remainder) == -1) {
+				warn("nanosleep");
+				/* XXX perhaps should also do something about
+				 * XXX the error */
+			}
+		}
+		r = mio_write(mididev, me.midievent, sizeof(me.midievent));
+		if (r < sizeof(me.midievent)) {
+			warnx("mio_write returned an error");
+			return -1;
+		}
+
+		current_pos = next_event_pos;
+	}
+
+	return 0;
 }

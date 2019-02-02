@@ -9,6 +9,6 @@ NOMAN=	lightplay
 
 BINDIR=	${PREFIX}/bin
 
-LDADD+=	-lsndio
+LDADD+=	-lsndio -lm
 
 .include <bsd.prog.mk>
