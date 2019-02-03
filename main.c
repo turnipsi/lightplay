@@ -25,9 +25,14 @@
 #include <time.h>
 #include <unistd.h>
 
-#define F0_SYSEX_EVENT 0xf0
-#define F7_SYSEX_EVENT 0xf7
-#define FF_META_EVENT  0xff
+#define MIDI_NOTE_OFF			0x80
+#define MIDI_NOTE_ON			0x90
+#define MIDI_PROGRAM_CHANGE		0xc0
+#define MIDI_CHANNEL_KEY_PRESSURE	0xd0
+
+#define MIDI_SYSEX_EVENT_F0		0xf0
+#define MIDI_SYSEX_EVENT_F7		0xf7
+#define MIDI_META_EVENT			0xff
 
 #define DEFAULT_MIDIEVENTS_SIZE 1024
 
@@ -321,6 +326,7 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 {
 	uint8_t raw_midievent[3];
 	int delta_time, event_length;
+	size_t skip_bytes;
 
 	delta_time = get_next_variable_length_quantity(midifile, current_byte);
 	if (delta_time < 0)
@@ -334,10 +340,11 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 
 	/* XXX events might affect *ticks_pqn */
 
-	if (raw_midievent[0] == F0_SYSEX_EVENT
-	    || raw_midievent[0] == F7_SYSEX_EVENT
-	    || raw_midievent[0] == FF_META_EVENT) {
-		if (raw_midievent[0] == FF_META_EVENT) {
+	skip_bytes = 2;
+	if (raw_midievent[0] == MIDI_SYSEX_EVENT_F0
+	    || raw_midievent[0] == MIDI_SYSEX_EVENT_F7
+	    || raw_midievent[0] == MIDI_META_EVENT) {
+		if (raw_midievent[0] == MIDI_META_EVENT) {
 			if (fread(&raw_midievent[1], sizeof(uint8_t), 1,
 			    midifile) != 1) {
 				warnx("could not read next meta event type,"
@@ -351,13 +358,23 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 		    current_byte);
 		if (event_length < 0)
 			return -1;
-		if (fseek(midifile, event_length, SEEK_CUR) == -1) {
-			warnx("could not seek over sysex/meta event");
+		skip_bytes = event_length;
+	} else if ((raw_midievent[0] & 0xf0) == MIDI_PROGRAM_CHANGE
+	    || (raw_midievent[0] & 0xf0) == MIDI_CHANNEL_KEY_PRESSURE) {
+		skip_bytes = 1;
+	}
+
+	if (raw_midievent[0] != MIDI_NOTE_OFF
+	    && raw_midievent[0] != MIDI_NOTE_ON) {
+		if (fseek(midifile, skip_bytes, SEEK_CUR) == -1) {
+			warnx("could not skip an uninteresting midi event");
 			return -1;
 		}
-		*current_byte += event_length;
+		*current_byte += skip_bytes;
 		return 0;
 	}
+
+	/* now raw_midievent is either noteoff or noteon event */
 
 	if (fread(&raw_midievent[1], sizeof(uint8_t), 2, midifile) != 2) {
 		warnx("could not read next midi event, short file?");
@@ -365,8 +382,7 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 	}
 	*current_byte += 2;
 
-	/* XXX correct formulae is?
-	   XXX should lookup tempo information from the tempo map?
+	/* XXX should lookup tempo information from the tempo map?
 	   XXX or does it matter considering the actual plan ? */
 	*pos += 120.0 * delta_time / *ticks_pqn;
 
