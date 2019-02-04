@@ -26,6 +26,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "config.h"
+
 #define MIDI_NOTE_OFF			0x80
 #define MIDI_NOTE_ON			0x90
 #define MIDI_PROGRAM_CHANGE		0xc0
@@ -92,8 +94,10 @@ main(int argc, char *argv[])
 	if ((mididev = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL)
 		errx(1, "could not open midi device");
 
+#ifdef HAVE_PLEDGE
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
+#endif
 
 	ret = do_sequencing(midifile, mididev);
 

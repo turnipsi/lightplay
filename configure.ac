@@ -11,4 +11,8 @@ AC_SEARCH_LIBS([mio_open], [sndio], [], [
   AC_MSG_ERROR([unable to find the mio_open() function])
 ])
 
+AC_SEARCH_LIBS([pledge], [], [
+  AC_DEFINE([HAVE_PLEDGE], [1], [pledge])
+], [])
+
 AC_OUTPUT
