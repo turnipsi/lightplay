@@ -19,4 +19,8 @@ AC_SEARCH_LIBS([pledge], [], [
   AC_DEFINE([HAVE_PLEDGE], [1], [pledge])
 ], [])
 
+AC_SEARCH_LIBS([reallocarray], [bsd], [], [
+  AC_MSG_ERROR([unable to find the reallocarray() function])
+])
+
 AC_OUTPUT
