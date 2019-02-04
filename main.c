@@ -307,25 +307,24 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 int
 get_next_variable_length_quantity(FILE *midifile, uint32_t *current_byte)
 {
-	uint8_t vlq_bytes[4] = { 0, 0, 0, 0 };
+	uint32_t value;
+	uint8_t vlq_byte;
 	ssize_t i;
 
-	for (i = 3; i >= 0; i--) {
-		if (fread(&vlq_bytes[i], sizeof(uint8_t), 1, midifile) != 1) {
+	value = 0;
+	for (i = 0; i < 4; i++) {
+		if (fread(&vlq_byte, sizeof(uint8_t), 1, midifile) != 1) {
 			warnx("could not read next variable length quantity,"
 			    " short file?");
 			return -1;
 		}
 		(*current_byte)++;
-		if ((vlq_bytes[i] & 0x80) == 0)
+		value = (value << 7) | (vlq_byte & 0x7f);
+		if ((vlq_byte & 0x80) == 0)
 			break;
 	}
 
-	return
-	      (vlq_bytes[0] & 0x7f << 21)
-	    + (vlq_bytes[1] & 0x7f << 14)
-	    + (vlq_bytes[2] & 0x7f << 7)
-	    + (vlq_bytes[3] & 0x7f << 0);
+	return value;
 }
 
 /*
