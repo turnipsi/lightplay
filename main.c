@@ -15,6 +15,7 @@
  */
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <err.h>
 #include <math.h>
 #include <sndio.h>
@@ -34,11 +35,19 @@
 #define MIDI_SYSEX_EVENT_F7		0xf7
 #define MIDI_META_EVENT			0xff
 
+#define MIDI_META_SET_TEMPO		0x51
+
 #define DEFAULT_MIDIEVENTS_SIZE 1024
 
+enum midievent_type { MIDIEVENT_CHANNEL_VOICE, MIDIEVENT_TEMPO_CHANGE };
+
 struct midievent {
-	float	pos;		/* absolute event position in seconds */
-	uint8_t	midievent[3];
+	enum midievent_type	type;
+	int			at_ticks;
+	union {
+		uint8_t		midievent[3];
+		int		tempo_in_microseconds_pqn;
+	} u;
 };
 
 struct midievent_buffer {
@@ -50,12 +59,14 @@ struct midievent_buffer {
 int	compare_midievent_positions(const void *, const void *);
 int	do_sequencing(FILE *, struct mio_hdl *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
-int	get_next_note_event(FILE *, uint32_t *, struct midievent *, float *,
-    uint16_t *);
+int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *);
+int	parse_meta_event(FILE *, uint32_t *, struct midievent *, int *, int);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
-int	parse_standard_midi_file(FILE *, struct midievent_buffer *);
-int	parse_next_track(FILE *, struct midievent_buffer *, uint16_t *);
-int	playback_midievents(struct mio_hdl *, struct midievent_buffer *);
+int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
+    uint16_t *);
+int	parse_next_track(FILE *, struct midievent_buffer *);
+int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
+    uint16_t);
 
 int
 main(int argc, char *argv[])
@@ -95,6 +106,7 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 {
 	struct midievent_buffer me_buffer;
 	int ret;
+	uint16_t ticks_pqn;
 
 	me_buffer.events = calloc(DEFAULT_MIDIEVENTS_SIZE,
 	    sizeof(struct midievent));
@@ -105,7 +117,7 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 	me_buffer.allocated_size = DEFAULT_MIDIEVENTS_SIZE;
 	me_buffer.event_count = 0;
 
-	ret = parse_standard_midi_file(midifile, &me_buffer);
+	ret = parse_standard_midi_file(midifile, &me_buffer, &ticks_pqn);
 	if (ret == -1)
 		goto out;
 
@@ -118,7 +130,7 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 		goto out;
 	}
 
-	ret = playback_midievents(mididev, &me_buffer);
+	ret = playback_midievents(mididev, &me_buffer, ticks_pqn);
 
 out:
 	free(me_buffer.events);
@@ -134,21 +146,22 @@ compare_midievent_positions(const void *_a, const void *_b)
 	a = _a;
 	b = _b;
 
-	return (a->pos < b->pos) ? -1 :
-	       (a->pos > b->pos) ?  1 : 0;
+	return (a->at_ticks < b->at_ticks) ? -1 :
+	       (a->at_ticks > b->at_ticks) ?  1 : 0;
 }
 
 int
-parse_standard_midi_file(FILE *midifile, struct midievent_buffer *me_buffer)
+parse_standard_midi_file(FILE *midifile, struct midievent_buffer *me_buffer,
+    uint16_t *ticks_pqn)
 {
-	uint16_t track_count, ticks_pqn;
+	uint16_t track_count;
 	int i, ret;
 
-	if ((ret = parse_smf_header(midifile, &track_count, &ticks_pqn)) == -1)
+	if ((ret = parse_smf_header(midifile, &track_count, ticks_pqn)) == -1)
 		return ret;
 
 	for (i = 0; i < track_count; i++) {
-		ret = parse_next_track(midifile, me_buffer, &ticks_pqn);
+		ret = parse_next_track(midifile, me_buffer);
 		if (ret == -1)
 			return ret;
 	}
@@ -225,15 +238,13 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 }
 
 int
-parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer,
-    uint16_t *ticks_pqn)
+parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 {
 	char mtrk[5];
 	struct midievent midievent;
 	struct midievent *new_events;
-	float pos;
 	uint32_t track_bytes, current_byte;
-	int delta_time, track_found, ret;
+	int at_ticks, delta_time, track_found, ret;
 
 	track_found = 0;
 	while (!track_found) {
@@ -257,16 +268,17 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer,
 		}
 	}
 
-	pos = 0.0;
+	at_ticks = 0;
 	current_byte = 0;
 
 	while (current_byte < track_bytes) {
-		ret = get_next_note_event(midifile, &current_byte, &midievent,
-		    &pos, ticks_pqn);
+		ret = get_next_midi_event(midifile, &current_byte, &midievent,
+		    &at_ticks);
 		if (ret == -1)
 			return -1;
 		if (ret == 0)
 			continue;
+		assert(ret == 1);
 
 		if (me_buffer->event_count >= me_buffer->allocated_size) {
 			if (me_buffer->allocated_size >= SIZE_MAX/2) {
@@ -318,11 +330,12 @@ get_next_variable_length_quantity(FILE *midifile, uint32_t *current_byte)
 
 /*
  * Returns the number of midi events returned, 0 or 1.  Is 0 if next midi
- * event is not a note event, and 1 if it is.  Returns -1 in case of error.
+ * event is not an interesting event, and 1 if it is.  Returns -1 in case
+ * of error.
  */
 int
-get_next_note_event(FILE *midifile, uint32_t *current_byte,
-    struct midievent *midievent, float *pos, uint16_t *ticks_pqn)
+get_next_midi_event(FILE *midifile, uint32_t *current_byte,
+    struct midievent *midievent, int *at_ticks)
 {
 	uint8_t raw_midievent[3];
 	int delta_time, event_length;
@@ -338,22 +351,14 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 	}
 	(*current_byte)++;
 
-	/* XXX events might affect *ticks_pqn */
+	if (raw_midievent[0] == MIDI_META_EVENT)
+		return parse_meta_event(midifile, current_byte, midievent,
+		    at_ticks, delta_time);
 
 	skip_bytes = 2;
-	if (raw_midievent[0] == MIDI_SYSEX_EVENT_F0
-	    || raw_midievent[0] == MIDI_SYSEX_EVENT_F7
-	    || raw_midievent[0] == MIDI_META_EVENT) {
-		if (raw_midievent[0] == MIDI_META_EVENT) {
-			if (fread(&raw_midievent[1], sizeof(uint8_t), 1,
-			    midifile) != 1) {
-				warnx("could not read next meta event type,"
-				    " short file?");
-				return -1;
-			}
-			(*current_byte)++;
-		}
 
+	if (raw_midievent[0] == MIDI_SYSEX_EVENT_F0
+	    || raw_midievent[0] == MIDI_SYSEX_EVENT_F7) {
 		event_length = get_next_variable_length_quantity(midifile,
 		    current_byte);
 		if (event_length < 0)
@@ -365,7 +370,8 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 	}
 
 	if (raw_midievent[0] != MIDI_NOTE_OFF
-	    && raw_midievent[0] != MIDI_NOTE_ON) {
+	    && raw_midievent[0] != MIDI_NOTE_ON
+	    && skip_bytes > 0) {
 		if (fseek(midifile, skip_bytes, SEEK_CUR) == -1) {
 			warnx("could not skip an uninteresting midi event");
 			return -1;
@@ -382,51 +388,115 @@ get_next_note_event(FILE *midifile, uint32_t *current_byte,
 	}
 	*current_byte += 2;
 
-	/* XXX should lookup tempo information from the tempo map?
-	   XXX or does it matter considering the actual plan ? */
-	*pos += 120.0 * delta_time / *ticks_pqn;
+	/* XXX should check possibility of int overflow */
+	*at_ticks += delta_time;
 
-	midievent->pos = *pos;
-	midievent->midievent[0] = raw_midievent[0];
-	midievent->midievent[1] = raw_midievent[1];
-	midievent->midievent[2] = raw_midievent[2];
+	midievent->type = MIDIEVENT_CHANNEL_VOICE;
+	midievent->at_ticks = *at_ticks;
+	midievent->u.midievent[0] = raw_midievent[0];
+	midievent->u.midievent[1] = raw_midievent[1];
+	midievent->u.midievent[2] = raw_midievent[2];
+
+	return 1;
+}
+
+int
+parse_meta_event(FILE *midifile, uint32_t *current_byte,
+    struct midievent *midievent, int *at_ticks, int delta_time)
+{
+	uint8_t new_tempo_spec[3];
+	int event_length, new_tempo;
+	uint8_t event_type;
+
+	if (fread(&event_type, sizeof(uint8_t), 1, midifile) != 1) {
+		warnx("could not read next meta event type, short file?");
+		return -1;
+	}
+	(*current_byte)++;
+
+	event_length = get_next_variable_length_quantity(midifile,
+	    current_byte);
+	if (event_length < 0)
+		return -1;
+
+	if (event_type != MIDI_META_SET_TEMPO) {
+		if (fseek(midifile, event_length, SEEK_CUR) == -1) {
+			warnx("could not skip a meta event");
+			return -1;
+		}
+		*current_byte += event_length;
+		return 0;
+	}
+
+	if (event_length != sizeof(new_tempo_spec)) {
+		warnx("set tempo meta event not of expected size");
+		return -1;
+	}
+
+	if (fread(new_tempo_spec, sizeof(new_tempo_spec), 1, midifile) != 1) {
+		warnx("could not read set tempo event value");
+		return -1;
+	}
+	(*current_byte) += sizeof(new_tempo_spec);
+
+	*at_ticks += delta_time;
+	new_tempo = (new_tempo_spec[0] << 16) | (new_tempo_spec[1] << 8)
+	    | (new_tempo_spec[2] << 0);
+
+	midievent->type = MIDIEVENT_TEMPO_CHANGE;
+	midievent->at_ticks = *at_ticks;
+	midievent->u.tempo_in_microseconds_pqn = new_tempo;
 
 	return 1;
 }
 
 int
 playback_midievents(struct mio_hdl *mididev,
-    struct midievent_buffer *me_buffer)
+    struct midievent_buffer *me_buffer, uint16_t ticks_pqn)
 {
 	struct midievent me;
 	struct timespec timeout, remainder;
-	float current_pos, next_event_pos, pos_difference;
-	size_t i, r;
+	int current_at_ticks, next_event_at_ticks, at_ticks_difference;
+	int tempo_microseconds_pqn, wait_microseconds;
+ 	size_t i, r;
 
-	current_pos = 0.0;
+	current_at_ticks = 0;
+
+	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
 		me = me_buffer->events[i];
-		next_event_pos = me.pos;
-		pos_difference = next_event_pos - current_pos;
+		next_event_at_ticks = me.at_ticks;
+		at_ticks_difference = next_event_at_ticks - current_at_ticks;
 
-		if (pos_difference >= 0.00001) {
-			timeout.tv_sec = floor(pos_difference);
-			timeout.tv_nsec =
-			    1000000000 * (pos_difference - timeout.tv_sec);
+		if (at_ticks_difference > 0) {
+			wait_microseconds =
+			    at_ticks_difference * (tempo_microseconds_pqn / ticks_pqn);
+			timeout.tv_sec = wait_microseconds / 1000000;
+			timeout.tv_nsec = 1000
+			    * (wait_microseconds - 1000000 * timeout.tv_sec);
+			/* XXX */
+			printf("waiting for wait_microseconds=%d %d.%09d\n", wait_microseconds, timeout.tv_sec, timeout.tv_nsec);
 			if (nanosleep(&timeout, &remainder) == -1) {
 				warn("nanosleep");
 				/* XXX perhaps should also do something about
 				 * XXX the error */
 			}
 		}
-		r = mio_write(mididev, me.midievent, sizeof(me.midievent));
-		if (r < sizeof(me.midievent)) {
-			warnx("mio_write returned an error");
-			return -1;
+
+		if (me.type == MIDIEVENT_TEMPO_CHANGE) {
+			printf("Handle tempo change of value %d\n",
+			    me.u.tempo_in_microseconds_pqn);
+		} else {
+			r = mio_write(mididev, me.u.midievent,
+			    sizeof(me.u.midievent));
+			if (r < sizeof(me.u.midievent)) {
+				warnx("mio_write returned an error");
+				return -1;
+			}
 		}
 
-		current_pos = next_event_pos;
+		current_at_ticks = next_event_at_ticks;
 	}
 
 	return 0;
