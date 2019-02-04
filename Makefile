@@ -1,14 +1,9 @@
-# $Id: Makefile,v 1.3 2015/10/02 12:02:23 je Exp $
+.PHONY: all
+all: lightplay
 
-PREFIX	?= /usr/local
+lightplay: main.c
+	cc -o $@ main.c -lsndio -lm
 
-SRCS=	main.c
-
-PROG=	lightplay
-NOMAN=	lightplay
-
-BINDIR=	${PREFIX}/bin
-
-LDADD+=	-lsndio -lm
-
-.include <bsd.prog.mk>
+.PHONY: clean
+clean:
+	rm -f lightplay *.d *.o
