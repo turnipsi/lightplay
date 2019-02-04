@@ -368,8 +368,8 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 		skip_bytes = 1;
 	}
 
-	if (raw_midievent[0] != MIDI_NOTE_OFF
-	    && raw_midievent[0] != MIDI_NOTE_ON
+	if ((raw_midievent[0] & 0xf0) != MIDI_NOTE_OFF
+	    && (raw_midievent[0] & 0xf0) != MIDI_NOTE_ON
 	    && skip_bytes > 0) {
 		if (fseek(midifile, skip_bytes, SEEK_CUR) == -1) {
 			warnx("could not skip an uninteresting midi event");
