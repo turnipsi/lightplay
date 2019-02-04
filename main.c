@@ -57,6 +57,7 @@ struct midievent_buffer {
 	size_t			 event_count;
 };
 
+void	add_notes_waiting(int *, uint8_t *);
 int	compare_midievent_positions(const void *, const void *);
 int	do_sequencing(FILE *, struct mio_hdl *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
@@ -68,7 +69,7 @@ int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
 int	parse_next_track(FILE *, struct midievent_buffer *);
 int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
     uint16_t);
-void	update_active_notes(int *, uint8_t *);
+int	wait_for_notes(struct mio_hdl *, int *);
 int	write_midi_event(struct mio_hdl *, uint8_t *, size_t);
 
 int
@@ -457,13 +458,14 @@ playback_midievents(struct mio_hdl *mididev,
 {
 	struct midievent me;
 	struct timespec timeout, remainder;
+	int notes_waiting[MAX_ACTIVE_NOTES];
+	size_t i;
 	int current_at_ticks, next_event_at_ticks, at_ticks_difference;
 	int tempo_microseconds_pqn, wait_microseconds;
-	int active_notes[MAX_ACTIVE_NOTES];
-	size_t i;
+	int r;
 
 	for (i = 0; i < MAX_ACTIVE_NOTES; i++)
-		active_notes[i] = 0;
+		notes_waiting[i] = 0;
 
 	current_at_ticks = 0;
 	tempo_microseconds_pqn = 500000;
@@ -474,8 +476,11 @@ playback_midievents(struct mio_hdl *mididev,
 		at_ticks_difference = next_event_at_ticks - current_at_ticks;
 
 		if (at_ticks_difference > 0) {
-			wait_microseconds =
-			    at_ticks_difference * (tempo_microseconds_pqn / ticks_pqn);
+			if (wait_for_notes(mididev, notes_waiting) == -1)
+				return -1;
+
+			wait_microseconds = at_ticks_difference
+			    * (tempo_microseconds_pqn / ticks_pqn);
 			timeout.tv_sec = wait_microseconds / 1000000;
 			timeout.tv_nsec = 1000
 			    * (wait_microseconds - 1000000 * timeout.tv_sec);
@@ -490,7 +495,7 @@ playback_midievents(struct mio_hdl *mididev,
 			tempo_microseconds_pqn
 			    = me.u.tempo_in_microseconds_pqn;
 		} else {
-			update_active_notes(active_notes, me.u.raw_midievent);
+			add_notes_waiting(notes_waiting, me.u.raw_midievent);
 
 			if (write_midi_event(mididev, me.u.raw_midievent,
 			    sizeof(me.u.raw_midievent)) == -1)
@@ -504,13 +509,41 @@ playback_midievents(struct mio_hdl *mididev,
 }
 
 void
-update_active_notes(int *active_notes, uint8_t *raw_midievent)
+add_notes_waiting(int *notes_waiting, uint8_t *raw_midievent)
 {
-	if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_ON) {
-		active_notes[ raw_midievent[1] & 0x7f ] = 1;
-	} else if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_OFF) {
-		active_notes[ raw_midievent[1] & 0x7f ] = 0;
-	}
+	if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_ON)
+		notes_waiting[ raw_midievent[1] & 0x7f ] = 1;
+}
+
+int
+wait_for_notes(struct mio_hdl *mididev, int *notes_waiting)
+{
+	size_t i;
+	uint8_t raw_midievent[3];
+	int must_wait;
+
+	do {
+		must_wait = 0;
+		for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
+			if (notes_waiting[i])
+				must_wait = 1;
+		}
+
+		if (!must_wait)
+			break;
+
+		if (mio_read(mididev, raw_midievent, 3) != 3) {
+			warnx("mio_read error");
+			return -1;
+		}
+
+		/* Exact match means the noteon/noteoff events occur on
+		 * channel 1. */
+		if (raw_midievent[0] == MIDI_NOTE_ON)
+			notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
+	} while (1);
+
+	return 0;
 }
 
 int
