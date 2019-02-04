@@ -46,7 +46,7 @@ struct midievent {
 	enum midievent_type	type;
 	int			at_ticks;
 	union {
-		uint8_t		midievent[3];
+		uint8_t		raw_midievent[3];
 		int		tempo_in_microseconds_pqn;
 	} u;
 };
@@ -69,6 +69,7 @@ int	parse_next_track(FILE *, struct midievent_buffer *);
 int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
     uint16_t);
 void	update_active_notes(int *, uint8_t *);
+int	write_midi_event(struct mio_hdl *, uint8_t *, size_t);
 
 int
 main(int argc, char *argv[])
@@ -393,9 +394,9 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 
 	midievent->type = MIDIEVENT_CHANNEL_VOICE;
 	midievent->at_ticks = *at_ticks;
-	midievent->u.midievent[0] = raw_midievent[0];
-	midievent->u.midievent[1] = raw_midievent[1];
-	midievent->u.midievent[2] = raw_midievent[2];
+	midievent->u.raw_midievent[0] = raw_midievent[0];
+	midievent->u.raw_midievent[1] = raw_midievent[1];
+	midievent->u.raw_midievent[2] = raw_midievent[2];
 
 	return 1;
 }
@@ -459,7 +460,7 @@ playback_midievents(struct mio_hdl *mididev,
 	int current_at_ticks, next_event_at_ticks, at_ticks_difference;
 	int tempo_microseconds_pqn, wait_microseconds;
 	int active_notes[MAX_ACTIVE_NOTES];
- 	size_t i, r;
+	size_t i;
 
 	for (i = 0; i < MAX_ACTIVE_NOTES; i++)
 		active_notes[i] = 0;
@@ -489,16 +490,11 @@ playback_midievents(struct mio_hdl *mididev,
 			tempo_microseconds_pqn
 			    = me.u.tempo_in_microseconds_pqn;
 		} else {
-			if (me.type == MIDIEVENT_CHANNEL_VOICE)
-				update_active_notes(active_notes,
-				    me.u.midievent);
+			update_active_notes(active_notes, me.u.raw_midievent);
 
-			r = mio_write(mididev, me.u.midievent,
-			    sizeof(me.u.midievent));
-			if (r < sizeof(me.u.midievent)) {
-				warnx("mio_write returned an error");
+			if (write_midi_event(mididev, me.u.raw_midievent,
+			    sizeof(me.u.raw_midievent)) == -1)
 				return -1;
-			}
 		}
 
 		current_at_ticks = next_event_at_ticks;
@@ -515,4 +511,27 @@ update_active_notes(int *active_notes, uint8_t *raw_midievent)
 	} else if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_OFF) {
 		active_notes[ raw_midievent[1] & 0x7f ] = 0;
 	}
+}
+
+int
+write_midi_event(struct mio_hdl *mididev, uint8_t *raw_midievent,
+    size_t raw_midievent_size)
+{
+	int r;
+
+	/* Exact match means the noteon/noteoff events occur on channel 1.
+	 * Manipulate the note velocity to something that is (hopefully)
+	 * not going to be heard, because we only want to show the lights
+	 * and not the sound. */
+	if (raw_midievent[0] == MIDI_NOTE_ON
+	    || raw_midievent[1] == MIDI_NOTE_OFF)
+		raw_midievent[2] = 0;
+
+	r = mio_write(mididev, raw_midievent, raw_midievent_size);
+	if (r < raw_midievent_size) {
+		warnx("mio_write returned an error");
+		return -1;
+	}
+
+	return 0;
 }
