@@ -460,7 +460,6 @@ playback_midievents(struct mio_hdl *mididev,
  	size_t i, r;
 
 	current_at_ticks = 0;
-
 	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
@@ -474,8 +473,6 @@ playback_midievents(struct mio_hdl *mididev,
 			timeout.tv_sec = wait_microseconds / 1000000;
 			timeout.tv_nsec = 1000
 			    * (wait_microseconds - 1000000 * timeout.tv_sec);
-			/* XXX */
-			printf("waiting for wait_microseconds=%d %d.%09d\n", wait_microseconds, timeout.tv_sec, timeout.tv_nsec);
 			if (nanosleep(&timeout, &remainder) == -1) {
 				warn("nanosleep");
 				/* XXX perhaps should also do something about
@@ -484,8 +481,8 @@ playback_midievents(struct mio_hdl *mididev,
 		}
 
 		if (me.type == MIDIEVENT_TEMPO_CHANGE) {
-			printf("Handle tempo change of value %d\n",
-			    me.u.tempo_in_microseconds_pqn);
+			tempo_microseconds_pqn
+			    = me.u.tempo_in_microseconds_pqn;
 		} else {
 			r = mio_write(mididev, me.u.midievent,
 			    sizeof(me.u.midievent));
