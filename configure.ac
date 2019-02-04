@@ -7,6 +7,10 @@ AC_CONFIG_FILES([
  src/Makefile
 ])
 
+AC_SEARCH_LIBS([mergesort], [bsd], [], [
+  AC_MSG_ERROR([unable to find the mergesort() function])
+])
+
 AC_SEARCH_LIBS([mio_open], [sndio], [], [
   AC_MSG_ERROR([unable to find the mio_open() function])
 ])
