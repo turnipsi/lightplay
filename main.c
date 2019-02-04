@@ -124,7 +124,6 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 		goto out;
 
 	/* sort playback events by position, must be stable sort */
-	/* XXX error handling? */
 	ret = mergesort(me_buffer.events, me_buffer.event_count,
 	   sizeof(struct midievent), compare_midievent_positions);
 	if (ret == -1) {
