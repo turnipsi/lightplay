@@ -38,6 +38,7 @@
 #define MIDI_META_SET_TEMPO		0x51
 
 #define DEFAULT_MIDIEVENTS_SIZE 1024
+#define MAX_ACTIVE_NOTES 128
 
 enum midievent_type { MIDIEVENT_CHANNEL_VOICE, MIDIEVENT_TEMPO_CHANGE };
 
@@ -67,6 +68,7 @@ int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
 int	parse_next_track(FILE *, struct midievent_buffer *);
 int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
     uint16_t);
+void	update_active_notes(int *, uint8_t *);
 
 int
 main(int argc, char *argv[])
@@ -457,7 +459,11 @@ playback_midievents(struct mio_hdl *mididev,
 	struct timespec timeout, remainder;
 	int current_at_ticks, next_event_at_ticks, at_ticks_difference;
 	int tempo_microseconds_pqn, wait_microseconds;
+	int active_notes[MAX_ACTIVE_NOTES];
  	size_t i, r;
+
+	for (i = 0; i < MAX_ACTIVE_NOTES; i++)
+		active_notes[i] = 0;
 
 	current_at_ticks = 0;
 	tempo_microseconds_pqn = 500000;
@@ -484,6 +490,10 @@ playback_midievents(struct mio_hdl *mididev,
 			tempo_microseconds_pqn
 			    = me.u.tempo_in_microseconds_pqn;
 		} else {
+			if (me.type == MIDIEVENT_CHANNEL_VOICE)
+				update_active_notes(active_notes,
+				    me.u.midievent);
+
 			r = mio_write(mididev, me.u.midievent,
 			    sizeof(me.u.midievent));
 			if (r < sizeof(me.u.midievent)) {
@@ -496,4 +506,14 @@ playback_midievents(struct mio_hdl *mididev,
 	}
 
 	return 0;
+}
+
+void
+update_active_notes(int *active_notes, uint8_t *raw_midievent)
+{
+	if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_ON) {
+		active_notes[ raw_midievent[1] & 0x7f ] = 1;
+	} else if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_OFF) {
+		active_notes[ raw_midievent[1] & 0x7f ] = 0;
+	}
 }
