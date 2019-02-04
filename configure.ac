@@ -1,4 +1,4 @@
-AC_INIT([lightplay], [1.0], [juhaerk@icloud.com])
+AC_INIT([lightplay], [devel], [juhaerk@icloud.com])
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 AC_PROG_CC
 AC_CONFIG_HEADERS([config.h])
