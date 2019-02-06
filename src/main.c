@@ -522,11 +522,11 @@ add_notes_waiting(int *notes_waiting, uint8_t *raw_midievent)
 int
 wait_for_notes(struct mio_hdl *mididev, int *notes_waiting)
 {
-	size_t i;
+	size_t i, bytes_to_read, read_bytes;
 	uint8_t raw_midievent[3];
 	int must_wait;
 
-	do {
+	for (;;) {
 		must_wait = 0;
 		for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
 			if (notes_waiting[i])
@@ -536,16 +536,33 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting)
 		if (!must_wait)
 			break;
 
-		if (mio_read(mididev, raw_midievent, 3) != 3) {
-			warnx("mio_read error");
-			return -1;
-		}
+		bytes_to_read = 3;
+		for (;;) {
+			read_bytes = mio_read(mididev,
+					      &raw_midievent[3-bytes_to_read],
+					      bytes_to_read);
+			if (read_bytes == 0) {
+				warnx("mio_read error");
+				return -1;
+			}
+			bytes_to_read -= read_bytes;
 
-		/* Exact match means the noteon/noteoff events occur on
-		 * channel 1. */
-		if (raw_midievent[0] == MIDI_NOTE_ON)
-			notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
-	} while (1);
+			/* Exact match means the noteon/noteoff events occur
+			 * on channel 1. */
+			if (raw_midievent[0] == MIDI_NOTE_ON) {
+				if (bytes_to_read > 0)
+					continue;
+				notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
+				break;
+			} else {
+				/* XXX We skip events we are not interested in.
+				 * XXX But we should probably also understand
+				 * XXX something about the possible inputs we
+				 * XXX might be receiving. */
+				bytes_to_read = 3;
+			}
+		}
+	};
 
 	return 0;
 }
