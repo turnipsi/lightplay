@@ -63,7 +63,8 @@ void	add_notes_waiting(int *, uint8_t *);
 int	compare_midievent_positions(const void *, const void *);
 int	do_sequencing(FILE *, struct mio_hdl *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
-int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *);
+int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
+    uint8_t *);
 int	parse_meta_event(FILE *, uint32_t *, struct midievent *, int *, int);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
@@ -252,6 +253,9 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 	struct midievent *new_events;
 	uint32_t track_bytes, current_byte;
 	int at_ticks, delta_time, track_found, ret;
+	uint8_t prev_event_type;
+
+	prev_event_type = 0x00;
 
 	track_found = 0;
 	while (!track_found) {
@@ -267,6 +271,7 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 			return -1;
 		}
 		track_bytes = ntohl(track_bytes);
+
 		if (!track_found) {
 			if (fseek(midifile, track_bytes, SEEK_CUR) == -1) {
 				warnx("could not seek over header chunk");
@@ -280,7 +285,7 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 
 	while (current_byte < track_bytes) {
 		ret = get_next_midi_event(midifile, &current_byte, &midievent,
-		    &at_ticks);
+		    &at_ticks, &prev_event_type);
 		if (ret == -1)
 			return -1;
 		if (ret == 0)
@@ -339,9 +344,10 @@ get_next_variable_length_quantity(FILE *midifile, uint32_t *current_byte)
  * event is not an interesting event, and 1 if it is.  Returns -1 in case
  * of error.
  */
+
 int
 get_next_midi_event(FILE *midifile, uint32_t *current_byte,
-    struct midievent *midievent, int *at_ticks)
+    struct midievent *midievent, int *at_ticks, uint8_t *prev_event_type)
 {
 	uint8_t raw_midievent[3];
 	int delta_time, event_length;
@@ -356,6 +362,16 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 		return -1;
 	}
 	(*current_byte)++;
+
+	if (prev_event_type && !(raw_midievent[0] & 0x80)) {
+		raw_midievent[0] = *prev_event_type;
+		if (fseek(midifile, -1, SEEK_CUR) == -1) {
+			warnx("could not rewind back one byte in midi file");
+			return -1;
+		}
+		(*current_byte)--;
+	}
+	*prev_event_type = raw_midievent[0];
 
 	if (raw_midievent[0] == MIDI_META_EVENT)
 		return parse_meta_event(midifile, current_byte, midievent,
@@ -443,7 +459,7 @@ parse_meta_event(FILE *midifile, uint32_t *current_byte,
 		warnx("could not read set tempo event value");
 		return -1;
 	}
-	(*current_byte) += sizeof(new_tempo_spec);
+	*current_byte += sizeof(new_tempo_spec);
 
 	*at_ticks += delta_time;
 	new_tempo = (new_tempo_spec[0] << 16) | (new_tempo_spec[1] << 8)
