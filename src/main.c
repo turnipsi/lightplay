@@ -559,7 +559,9 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting)
 				 * XXX But we should probably also understand
 				 * XXX something about the possible inputs we
 				 * XXX might be receiving. */
-				bytes_to_read = 3;
+				raw_midievent[0] = raw_midievent[1];
+				raw_midievent[1] = raw_midievent[2];
+				bytes_to_read = 1;
 			}
 		}
 	};
