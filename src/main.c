@@ -556,13 +556,16 @@ write_midi_event(struct mio_hdl *mididev, uint8_t *raw_midievent,
 {
 	int r;
 
-	/* Exact match means the noteon/noteoff events occur on channel 1.
+	/*
+	 * Exact match means the noteon/noteoff events occur on channel 1.
 	 * Manipulate the note velocity to something that is (hopefully)
 	 * not going to be heard, because we only want to show the lights
-	 * and not the sound. */
+	 * and not the sound.  Note that at least with Yamaha EZ-220
+	 * velocity 0 does not trigger the keyboard lights, but 1 is enough.
+	 */
 	if (raw_midievent[0] == MIDI_NOTE_ON
 	    || raw_midievent[1] == MIDI_NOTE_OFF)
-		raw_midievent[2] = 0;
+		raw_midievent[2] = 1;
 
 	r = mio_write(mididev, raw_midievent, raw_midievent_size);
 	if (r < raw_midievent_size) {
