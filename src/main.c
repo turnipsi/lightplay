@@ -703,6 +703,8 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 		notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
 	}
 
+	*bytes_to_read = 3;
+
 	must_wait = 0;
 	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
 		if (notes_waiting[i])
