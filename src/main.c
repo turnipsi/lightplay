@@ -75,6 +75,7 @@ int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
 int	turn_on_next_lights(struct mio_hdl *, struct midievent_buffer *,
     size_t *, int *);
 int	wait_for_event(struct mio_hdl *, int, int *);
+int	wait_for_notes(struct mio_hdl *, int *, uint8_t *, size_t *);
 
 /* XXX const could be used where applicable */
 
