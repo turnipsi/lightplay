@@ -611,7 +611,7 @@ wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
 
 	timeout = (wait_microseconds > 0)
 		    ? (wait_microseconds / 1000)
-		    : INFTIM;
+		    : -1;
 
 	bytes_to_read = 3;
 
