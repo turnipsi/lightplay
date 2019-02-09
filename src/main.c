@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <err.h>
 #include <math.h>
+#include <poll.h>
 #include <sndio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -66,14 +67,17 @@ int	get_next_variable_length_quantity(FILE *, uint32_t *);
 int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
     uint8_t *);
 int	parse_meta_event(FILE *, uint32_t *, struct midievent *, int *, int);
+int	parse_next_track(FILE *, struct midievent_buffer *);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
     uint16_t *);
-int	parse_next_track(FILE *, struct midievent_buffer *);
 int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
     uint16_t);
-int	wait_for_notes(struct mio_hdl *, int *);
-int	write_midi_event(struct mio_hdl *, uint8_t *, size_t);
+int	turn_on_next_lights(struct mio_hdl *, struct midievent_buffer *,
+    size_t *, int *);
+int	wait_for_event(struct mio_hdl *, int, int *);
+
+/* XXX const could be used where applicable */
 
 int
 main(int argc, char *argv[])
@@ -477,10 +481,9 @@ playback_midievents(struct mio_hdl *mididev,
     struct midievent_buffer *me_buffer, uint16_t ticks_pqn)
 {
 	struct midievent me;
-	struct timespec timeout, remainder;
 	int notes_waiting[MAX_ACTIVE_NOTES];
-	size_t i;
-	int current_at_ticks, next_event_at_ticks, at_ticks_difference;
+	size_t i, lighted_keys_index;
+	int at_ticks_difference, current_at_ticks, next_event_at_ticks;
 	int tempo_microseconds_pqn, wait_microseconds;
 	int r;
 
@@ -488,38 +491,46 @@ playback_midievents(struct mio_hdl *mididev,
 		notes_waiting[i] = 0;
 
 	current_at_ticks = 0;
+	lighted_keys_index = 0;
 	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
 		me = me_buffer->events[i];
 		next_event_at_ticks = me.at_ticks;
-		at_ticks_difference = next_event_at_ticks - current_at_ticks;
 
-		if (at_ticks_difference > 0) {
-			if (wait_for_notes(mididev, notes_waiting) == -1)
-				return -1;
+		if (lighted_keys_index <= i) {
+			/* this increments lighted_keys_index */
+			turn_on_next_lights(mididev, me_buffer,
+			    &lighted_keys_index, notes_waiting);
+		}
 
-			wait_microseconds = at_ticks_difference
-			    * (tempo_microseconds_pqn / ticks_pqn);
-			timeout.tv_sec = wait_microseconds / 1000000;
-			timeout.tv_nsec = 1000
-			    * (wait_microseconds - 1000000 * timeout.tv_sec);
-			if (nanosleep(&timeout, &remainder) == -1) {
-				warn("nanosleep");
-				/* XXX perhaps should also do something about
-				 * XXX the error */
-			}
+		if (lighted_keys_index <= i) {
+			at_ticks_difference = 0;
+		} else {
+			at_ticks_difference
+			    = next_event_at_ticks - current_at_ticks;
+		}
+
+		/* XXX we never actually lookup the clock... which means
+		 * XXX the playing has to be somewhat inaccurate... */
+		wait_microseconds = at_ticks_difference
+		    * (tempo_microseconds_pqn / ticks_pqn);
+
+		if (wait_for_event(mididev, wait_microseconds, notes_waiting)
+		    == -1) {
+			return -1;
 		}
 
 		if (me.type == MIDIEVENT_TEMPO_CHANGE) {
 			tempo_microseconds_pqn
 			    = me.u.tempo_in_microseconds_pqn;
 		} else {
-			add_notes_waiting(notes_waiting, me.u.raw_midievent);
-
-			if (write_midi_event(mididev, me.u.raw_midievent,
-			    sizeof(me.u.raw_midievent)) == -1)
+			r = mio_write(mididev, me.u.raw_midievent,
+			    sizeof(me.u.raw_midievent));
+			if (r < sizeof(me.u.raw_midievent)) {
+				warnx("mio_write returned an error");
 				return -1;
+			}
 		}
 
 		current_at_ticks = next_event_at_ticks;
@@ -528,85 +539,177 @@ playback_midievents(struct mio_hdl *mididev,
 	return 0;
 }
 
-void
-add_notes_waiting(int *notes_waiting, uint8_t *raw_midievent)
-{
-	if ((raw_midievent[0] & 0xf0) == MIDI_NOTE_ON)
-		notes_waiting[ raw_midievent[1] & 0x7f ] = 1;
-}
-
 int
-wait_for_notes(struct mio_hdl *mididev, int *notes_waiting)
+turn_on_next_lights(struct mio_hdl *mididev,
+    struct midievent_buffer *me_buffer, size_t *lighted_keys_index,
+    int *notes_waiting)
 {
-	size_t i, bytes_to_read, read_bytes;
+	struct midievent me;
+	int next_event_at_ticks, r;
 	uint8_t raw_midievent[3];
-	int must_wait;
 
-	for (;;) {
-		must_wait = 0;
-		for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
-			if (notes_waiting[i])
-				must_wait = 1;
-		}
+	if (*lighted_keys_index >= me_buffer->event_count)
+		return 0;
 
-		if (!must_wait)
-			break;
+	me = me_buffer->events[ *lighted_keys_index ];
+	next_event_at_ticks = me.at_ticks;
 
-		bytes_to_read = 3;
-		for (;;) {
-			read_bytes = mio_read(mididev,
-					      &raw_midievent[3-bytes_to_read],
-					      bytes_to_read);
-			if (read_bytes == 0) {
-				warnx("mio_read error");
+	do {
+		/* XXX this is wrong, we should test that next_event_at_ticks
+		 * XXX is not too big */
+
+		raw_midievent[0] = me.u.raw_midievent[0];
+		raw_midievent[1] = me.u.raw_midievent[1];
+		raw_midievent[2] = me.u.raw_midievent[2];
+
+		/*
+		 * Exact match means the noteon/noteoff events occur on
+		 * channel 1.  Manipulate the note velocity to something that
+		 * is (hopefully) not going to be heard, because we only want
+		 * to show the lights and not the sound.  Note that at least
+		 * with Yamaha EZ-220 velocity 0 does not trigger the keyboard
+		 * lights, but 1 is enough.
+		 */
+		if (raw_midievent[0] == MIDI_NOTE_ON) {
+			raw_midievent[2] = 1;
+			r = mio_write(mididev, raw_midievent,
+			    sizeof(raw_midievent));
+			if (r < sizeof(raw_midievent)) {
+				warnx("mio_write returned an error");
 				return -1;
 			}
-			bytes_to_read -= read_bytes;
-
-			/* Exact match means the noteon/noteoff events occur
-			 * on channel 1. */
-			if (raw_midievent[0] == MIDI_NOTE_ON) {
-				if (bytes_to_read > 0)
-					continue;
-				notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
-				break;
-			} else {
-				/* XXX We skip events we are not interested in.
-				 * XXX But we should probably also understand
-				 * XXX something about the possible inputs we
-				 * XXX might be receiving. */
-				raw_midievent[0] = raw_midievent[1];
-				raw_midievent[1] = raw_midievent[2];
-				bytes_to_read = 1;
-			}
+			notes_waiting[ raw_midievent[1] & 0x7f ] = 1;
 		}
-	};
+
+		if (++(*lighted_keys_index) >= me_buffer->event_count)
+			break;
+
+		me = me_buffer->events[ *lighted_keys_index ];
+
+	} while (me.at_ticks <= next_event_at_ticks);
 
 	return 0;
 }
 
 int
-write_midi_event(struct mio_hdl *mididev, uint8_t *raw_midievent,
-    size_t raw_midievent_size)
+wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
+    int *notes_waiting)
 {
-	int r;
+	struct pollfd *pfd;
+	nfds_t nfds;
+	size_t i, bytes_to_read;
+	int timeout, r, ret;
+	uint8_t raw_midievent[3];
 
-	/*
-	 * Exact match means the noteon/noteoff events occur on channel 1.
-	 * Manipulate the note velocity to something that is (hopefully)
-	 * not going to be heard, because we only want to show the lights
-	 * and not the sound.  Note that at least with Yamaha EZ-220
-	 * velocity 0 does not trigger the keyboard lights, but 1 is enough.
-	 */
-	if (raw_midievent[0] == MIDI_NOTE_ON
-	    || raw_midievent[1] == MIDI_NOTE_OFF)
-		raw_midievent[2] = 1;
-
-	r = mio_write(mididev, raw_midievent, raw_midievent_size);
-	if (r < raw_midievent_size) {
-		warnx("mio_write returned an error");
+	/* XXX this can probably be done only once? */
+	/* XXX error handling in mio_nfds() and mio_pollfd() ? */
+	nfds = mio_nfds(mididev);
+	if ((pfd = calloc(nfds, sizeof(struct pollfd))) == NULL) {
+		warn("calloc");
 		return -1;
 	}
 
-	return 0;
+	timeout = (wait_microseconds > 0)
+		    ? (wait_microseconds / 1000)
+		    : INFTIM;
+
+	bytes_to_read = 3;
+
+	ret = 0;
+
+	for (;;) {
+		mio_pollfd(mididev, pfd, POLLIN);
+
+		/* XXX a new full timeout after a note...
+		 * XXX not right, should lookup the clock */
+		if ((r = poll(pfd, nfds, timeout)) == -1) {
+			warn("poll");
+			ret = -1;
+			goto out;
+		}
+
+		if (r == 0) {
+			/* timeout hits, playback should continue */
+			goto out;
+		}
+
+		r = wait_for_notes(mididev, notes_waiting, raw_midievent,
+		    &bytes_to_read);
+		if (r == -1) {
+			ret = -1;
+			goto out;
+		}
+		if (r == 0)
+			break;
+	}
+
+out:
+	free(pfd);	/* XXX do this only once? */
+
+	return ret;
+}
+
+/*  1 == must wait for more
+ *  0 == nothing to wait for
+ * -1 == error occurred */
+
+int
+wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
+   uint8_t *raw_midievent, size_t *bytes_to_read)
+{
+	size_t i, read_bytes;
+	int must_wait, r;
+
+	must_wait = 0;
+	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
+		if (notes_waiting[i])
+			must_wait = 1;
+	}
+	if (!must_wait)
+		return 0;
+
+	read_bytes = mio_read(mididev, &raw_midievent[3-(*bytes_to_read)],
+			      *bytes_to_read);
+	if (read_bytes == 0) {
+		warnx("mio_read error");
+		return -1;
+	}
+	*bytes_to_read -= read_bytes;
+
+	if (*bytes_to_read > 0)
+		return 1;
+
+	if ((raw_midievent[0] & 0xf0) != MIDI_NOTE_ON
+	    && (raw_midievent[0] & 0xf0) != MIDI_NOTE_OFF) {
+		/* XXX We skip events we are not interested in.
+		 * XXX But we should probably also understand
+		 * XXX something about the possible inputs we
+		 * XXX might be receiving. */
+		raw_midievent[0] = raw_midievent[1];
+		raw_midievent[1] = raw_midievent[2];
+		*bytes_to_read = 1;
+		return 1;
+	}
+
+	/* Exact match means the noteon/noteoff events occur
+	 * on channel 1. */
+	if (raw_midievent[0] == MIDI_NOTE_ON) {
+		raw_midievent[0] = MIDI_NOTE_OFF;
+		r = mio_write(mididev, raw_midievent, 3);
+		if (r < 3) {
+			warnx("mio_write returned an error");
+			return -1;
+		}
+		notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
+	}
+
+	must_wait = 0;
+	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
+		if (notes_waiting[i])
+			must_wait = 1;
+	}
+	if (!must_wait)
+		return 0;
+
+	return 1;
 }
