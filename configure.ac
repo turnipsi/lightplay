@@ -23,4 +23,9 @@ AC_SEARCH_LIBS([reallocarray], [bsd], [], [
   AC_MSG_ERROR([unable to find the reallocarray() function])
 ])
 
+if test "$ac_cv_search_mergesort" = "-lbsd" \
+     -o "$ac_cv_search_reallocarray" = "-lbsd"; then
+  AC_DEFINE([NEED_LIBBSD], [1], [need libbsd])
+fi
+
 AC_OUTPUT
