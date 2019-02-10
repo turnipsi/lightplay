@@ -7,6 +7,8 @@ AC_CONFIG_FILES([
  src/Makefile
 ])
 
+AC_CHECK_FUNC([pledge])
+
 AC_SEARCH_LIBS([mergesort], [bsd], [], [
   AC_MSG_ERROR([unable to find the mergesort() function])
 ])
@@ -15,17 +17,12 @@ AC_SEARCH_LIBS([mio_open], [sndio], [], [
   AC_MSG_ERROR([unable to find the mio_open() function])
 ])
 
-AC_SEARCH_LIBS([pledge], [], [
+if test "$ac_cv_search_mergesort" = "-lbsd"; then
+  AC_DEFINE([HAVE_MERGESORT_IN_LIBBSD], [1], [mergesort in libbsd])
+fi
+
+if test "$ac_cv_func_pledge" = "yes"; then
   AC_DEFINE([HAVE_PLEDGE], [1], [pledge])
-], [])
-
-AC_SEARCH_LIBS([reallocarray], [bsd], [], [
-  AC_MSG_ERROR([unable to find the reallocarray() function])
-])
-
-if test "$ac_cv_search_mergesort" = "-lbsd" \
-     -o "$ac_cv_search_reallocarray" = "-lbsd"; then
-  AC_DEFINE([NEED_LIBBSD], [1], [need libbsd])
 fi
 
 AC_OUTPUT

@@ -28,7 +28,7 @@
 
 #include "config.h"
 
-#ifdef NEED_LIBBSD
+#ifdef HAVE_MERGESORT_IN_LIBBSD
 #include <bsd/stdlib.h>
 #endif
 
@@ -301,17 +301,18 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 		assert(ret == 1);
 
 		if (me_buffer->event_count >= me_buffer->allocated_size) {
-			if (me_buffer->allocated_size >= SIZE_MAX/2) {
+			if (me_buffer->allocated_size
+			    >= SIZE_MAX / sizeof(struct midievent) / 2) {
 				warnx("maximum allocated size reached");
 				return -1;
 			}
 			me_buffer->allocated_size *= 2;
 
-			new_events = reallocarray(me_buffer->events,
-			    me_buffer->allocated_size,
-			    sizeof(struct midievent));
+			new_events = realloc(me_buffer->events,
+			    me_buffer->allocated_size
+			    * sizeof(struct midievent));
 			if (new_events == NULL) {
-				warn("reallocarray");
+				warn("realloc");
 				return -1;
 			}
 			me_buffer->events = new_events;
