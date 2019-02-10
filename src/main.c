@@ -78,10 +78,13 @@ int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
     uint16_t);
 int	turn_on_next_lights(struct mio_hdl *, struct midievent_buffer *,
     size_t *, int *);
+void	usage(void);
 int	wait_for_event(struct mio_hdl *, int, int *);
 int	wait_for_notes(struct mio_hdl *, int *, uint8_t *, size_t *);
 
 /* XXX const could be used where applicable */
+
+int	debug_level;
 
 int
 main(int argc, char *argv[])
@@ -89,13 +92,26 @@ main(int argc, char *argv[])
 	FILE *midifile;
 	const char *midifile_path;
 	struct mio_hdl *mididev;
-	int ret;
+	int ch, ret;
 
-	if (argc != 2) {
-		fprintf(stderr, "Usage: lightplay midifile\n");
-		exit(1);
+	debug_level = 0;
+
+	while ((ch = getopt(argc, argv, "d")) != -1) {
+		switch (ch) {
+		case 'd':
+			debug_level++;
+			break;
+		default:
+			usage();
+		}
 	}
-	midifile_path = argv[1];
+	argc -= optind;
+	argv += optind;
+
+	if (argc != 1)
+		usage();
+
+	midifile_path = argv[0];
 
 	if ((midifile = fopen(midifile_path, "r")) == NULL)
 		err(1, "could not open midi file \"%s\"", midifile_path);
@@ -116,6 +132,13 @@ main(int argc, char *argv[])
 		warn("could not close midi file");
 
 	return ret;
+}
+
+void
+usage(void)
+{
+	(void) fprintf(stderr, "Usage: lightplay [-d] midifile\n");
+	exit(1);
 }
 
 int
