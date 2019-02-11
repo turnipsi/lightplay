@@ -3,4 +3,16 @@
     <note priority="medium" time="1549897195">
         add debugging print statements
     </note>
+    <note priority="medium" time="1549897252">
+        port to Mac OS
+    </note>
+    <note priority="medium" time="1549897260">
+        port to Windows
+    </note>
+    <note priority="medium" time="1549897265">
+        port to NetBSD
+    </note>
+    <note priority="medium" time="1549897269">
+        port to FreeBSD
+    </note>
 </todo>
