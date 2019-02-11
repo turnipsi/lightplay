@@ -87,6 +87,7 @@ int	wait_for_notes(struct mio_hdl *, int *, uint8_t *, size_t *);
 /* XXX const could be used where applicable */
 
 static int	debug_level;
+static int	dry_run;
 
 int
 main(int argc, char *argv[])
@@ -97,11 +98,15 @@ main(int argc, char *argv[])
 	int ch, ret;
 
 	debug_level = 0;
+	dry_run = 0;
 
-	while ((ch = getopt(argc, argv, "d")) != -1) {
+	while ((ch = getopt(argc, argv, "dn")) != -1) {
 		switch (ch) {
 		case 'd':
 			debug_level++;
+			break;
+		case 'n':
+			dry_run = 1;
 			break;
 		default:
 			usage();
@@ -622,11 +627,13 @@ playback_midievents(struct mio_hdl *mididev,
 			    me.u.raw_midievent[0],
 			    me.u.raw_midievent[1],
 			    me.u.raw_midievent[2]);
-			r = mio_write(mididev, me.u.raw_midievent,
-			    sizeof(me.u.raw_midievent));
-			if (r < sizeof(me.u.raw_midievent)) {
-				warnx("mio_write returned an error");
-				return -1;
+			if (!dry_run) {
+				r = mio_write(mididev, me.u.raw_midievent,
+				    sizeof(me.u.raw_midievent));
+				if (r < sizeof(me.u.raw_midievent)) {
+					warnx("mio_write returned an error");
+					return -1;
+				}
 			}
 		}
 
@@ -672,13 +679,15 @@ turn_on_next_lights(struct mio_hdl *mididev,
 		 */
 		if (raw_midievent[0] == MIDI_NOTE_ON) {
 			note = raw_midievent[1] & 0x7f;
-			debugmsg(3, "turning on note %d\n", note);
+			debugmsg(3, "turning on light on note %d\n", note);
 			raw_midievent[2] = 1;
-			r = mio_write(mididev, raw_midievent,
-			    sizeof(raw_midievent));
-			if (r < sizeof(raw_midievent)) {
-				warnx("mio_write returned an error");
-				return -1;
+			if (!dry_run) {
+				r = mio_write(mididev, raw_midievent,
+				    sizeof(raw_midievent));
+				if (r < sizeof(raw_midievent)) {
+					warnx("mio_write returned an error");
+					return -1;
+				}
 			}
 			notes_waiting[note] = 1;
 		}
@@ -706,6 +715,9 @@ wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
 	size_t i, bytes_to_read;
 	int timeout, r, ret;
 	uint8_t raw_midievent[3];
+
+	if (dry_run)
+		return 0;
 
 	/* XXX this can probably be done only once? */
 	/* XXX error handling in mio_nfds() and mio_pollfd() ? */
@@ -772,6 +784,8 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 	size_t i, read_bytes;
 	int must_wait, r;
 	uint8_t note;
+
+	assert(dry_run == 0);
 
 	must_wait = 0;
 	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
