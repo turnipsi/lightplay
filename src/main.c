@@ -20,6 +20,7 @@
 #include <math.h>
 #include <poll.h>
 #include <sndio.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -65,6 +66,7 @@ struct midievent_buffer {
 
 void	add_notes_waiting(int *, uint8_t *);
 int	compare_midievent_positions(const void *, const void *);
+void	debugmsg(int, const char *, ...);
 int	do_sequencing(FILE *, struct mio_hdl *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
 int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
@@ -84,7 +86,7 @@ int	wait_for_notes(struct mio_hdl *, int *, uint8_t *, size_t *);
 
 /* XXX const could be used where applicable */
 
-int	debug_level;
+static int	debug_level;
 
 int
 main(int argc, char *argv[])
@@ -111,15 +113,22 @@ main(int argc, char *argv[])
 	if (argc != 1)
 		usage();
 
+	debugmsg(1, "starting up lightplay\n");
+
 	midifile_path = argv[0];
+
+	debugmsg(1, "opening midi file %s\n", midifile_path);
 
 	if ((midifile = fopen(midifile_path, "r")) == NULL)
 		err(1, "could not open midi file \"%s\"", midifile_path);
+
+	debugmsg(1, "opening midi device\n");
 
 	if ((mididev = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL)
 		errx(1, "could not open midi device");
 
 #ifdef HAVE_PLEDGE
+	debugmsg(3, "calling pledge\n");
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 #endif
@@ -131,7 +140,24 @@ main(int argc, char *argv[])
 	if (fclose(midifile) == EOF)
 		warn("could not close midi file");
 
+	debugmsg(1, "lightplay exiting with status code %d\n", ret);
+
 	return ret;
+}
+
+void
+debugmsg(int msg_level, const char *fmt, ...)
+{
+	va_list va;
+
+	if (debug_level < msg_level)
+		return;
+
+	(void) printf("lightplay debug[%d] :: ", msg_level);
+
+	va_start(va, fmt);
+	(void) vprintf(fmt, va);
+	va_end(va);
 }
 
 void
@@ -148,6 +174,8 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 	int ret;
 	uint16_t ticks_pqn;
 
+	debugmsg(3, "allocating midi event buffer\n");
+
 	me_buffer.events = calloc(DEFAULT_MIDIEVENTS_SIZE,
 	    sizeof(struct midievent));
 	if (me_buffer.events == NULL) {
@@ -161,6 +189,8 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 	if (ret == -1)
 		goto out;
 
+	debugmsg(3, "sorting midi events for playback\n");
+
 	/* sort playback events by position, must be stable sort */
 	ret = mergesort(me_buffer.events, me_buffer.event_count,
 	   sizeof(struct midievent), compare_midievent_positions);
@@ -173,6 +203,8 @@ do_sequencing(FILE *midifile, struct mio_hdl *mididev)
 
 out:
 	free(me_buffer.events);
+
+	debugmsg(2, "playback done\n");
 
 	return ret;
 }
@@ -196,6 +228,8 @@ parse_standard_midi_file(FILE *midifile, struct midievent_buffer *me_buffer,
 	uint16_t track_count;
 	int i, ret;
 
+	debugmsg(2, "starting to parse standard midi file\n");
+
 	if ((ret = parse_smf_header(midifile, &track_count, ticks_pqn)) == -1)
 		return ret;
 
@@ -204,6 +238,8 @@ parse_standard_midi_file(FILE *midifile, struct midievent_buffer *me_buffer,
 		if (ret == -1)
 			return ret;
 	}
+
+	debugmsg(2, "midi file parse finished\n");
 
 	return ret;
 }
@@ -214,6 +250,8 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 	char mthd[5];
 	uint32_t hdr_length;
 	uint16_t format, _track_count, _ticks_pqn;
+
+	debugmsg(3, "parsing midi file header\n");
 
 	if (fscanf(midifile, "%4s", mthd) != 1) {
 		warnx("could not read header, not a standard midi file?");
@@ -273,6 +311,9 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 	*track_count = _track_count;
 	*ticks_pqn = _ticks_pqn;
 
+	debugmsg(3, "parsed header, expecting %d tracks\n", *track_count);
+	debugmsg(3, "ticks per quarter note is %d\n", *ticks_pqn);
+
 	return 0;
 }
 
@@ -285,6 +326,8 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 	uint32_t track_bytes, current_byte;
 	int at_ticks, delta_time, track_found, ret;
 	uint8_t prev_event_type;
+
+	debugmsg(3, "parsing next midi track\n");
 
 	prev_event_type = 0x00;
 
@@ -302,8 +345,10 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 			return -1;
 		}
 		track_bytes = ntohl(track_bytes);
+		debugmsg(4, "track contains %d bytes\n", track_bytes);
 
 		if (!track_found) {
+			debugmsg(4, "skipping non-track chunk\n");
 			if (fseek(midifile, track_bytes, SEEK_CUR) == -1) {
 				warnx("could not seek over header chunk");
 				return -1;
@@ -324,6 +369,7 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 		assert(ret == 1);
 
 		if (me_buffer->event_count >= me_buffer->allocated_size) {
+			debugmsg(4, "reallocating midi event buffer\n");
 			if (me_buffer->allocated_size
 			    >= SIZE_MAX / sizeof(struct midievent) / 2) {
 				warnx("maximum allocated size reached");
@@ -344,6 +390,8 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 		me_buffer->events[me_buffer->event_count] = midievent;
 		me_buffer->event_count++;
 	}
+
+	debugmsg(2, "track parse finished\n");
 
 	return 0;
 }
@@ -389,6 +437,8 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 	if (delta_time < 0)
 		return -1;
 
+	debugmsg(5, "got delta time %d\n", delta_time);
+
 	if (fread(&raw_midievent[0], sizeof(uint8_t), 1, midifile) != 1) {
 		warnx("could not read next midi event type, short file?");
 		return -1;
@@ -396,6 +446,7 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 	(*current_byte)++;
 
 	if (prev_event_type && !(raw_midievent[0] & 0x80)) {
+		debugmsg(4, "using previous event type\n");
 		raw_midievent[0] = *prev_event_type;
 		if (fseek(midifile, -1, SEEK_CUR) == -1) {
 			warnx("could not rewind back one byte in midi file");
@@ -426,6 +477,7 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 	if ((raw_midievent[0] & 0xf0) != MIDI_NOTE_OFF
 	    && (raw_midievent[0] & 0xf0) != MIDI_NOTE_ON
 	    && skip_bytes > 0) {
+		debugmsg(4, "skipping midi event %02x\n", raw_midievent[0]);
 		if (fseek(midifile, skip_bytes, SEEK_CUR) == -1) {
 			warnx("could not skip an uninteresting midi event");
 			return -1;
@@ -451,6 +503,9 @@ get_next_midi_event(FILE *midifile, uint32_t *current_byte,
 	midievent->u.raw_midievent[1] = raw_midievent[1];
 	midievent->u.raw_midievent[2] = raw_midievent[2];
 
+	debugmsg(3, "parsed midi event %02x %02x %02x at ticks %d\n",
+	    raw_midievent[0], raw_midievent[1], raw_midievent[2], *at_ticks);
+
 	return 1;
 }
 
@@ -474,6 +529,7 @@ parse_meta_event(FILE *midifile, uint32_t *current_byte,
 		return -1;
 
 	if (event_type != MIDI_META_SET_TEMPO) {
+		debugmsg(4, "skipping midi meta event %02x\n", event_type);
 		if (fseek(midifile, event_length, SEEK_CUR) == -1) {
 			warnx("could not skip a meta event");
 			return -1;
@@ -497,6 +553,9 @@ parse_meta_event(FILE *midifile, uint32_t *current_byte,
 	new_tempo = (new_tempo_spec[0] << 16) | (new_tempo_spec[1] << 8)
 	    | (new_tempo_spec[2] << 0);
 
+	debugmsg(4, "new set tempo event with tempo %d at ticks %d\n",
+	    new_tempo, *at_ticks);
+
 	midievent->type = MIDIEVENT_TEMPO_CHANGE;
 	midievent->at_ticks = *at_ticks;
 	midievent->u.tempo_in_microseconds_pqn = new_tempo;
@@ -515,6 +574,8 @@ playback_midievents(struct mio_hdl *mididev,
 	int tempo_microseconds_pqn, wait_microseconds;
 	int r;
 
+	debugmsg(2, "starting playback\n");
+
 	for (i = 0; i < MAX_ACTIVE_NOTES; i++)
 		notes_waiting[i] = 0;
 
@@ -523,6 +584,8 @@ playback_midievents(struct mio_hdl *mididev,
 	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
+		debugmsg(5, "checking next midi event\n");
+
 		me = me_buffer->events[i];
 		next_event_at_ticks = me.at_ticks;
 
@@ -550,9 +613,15 @@ playback_midievents(struct mio_hdl *mididev,
 		}
 
 		if (me.type == MIDIEVENT_TEMPO_CHANGE) {
+			debugmsg(3, "tempo change to %d microseconds pqn\n",
+			    tempo_microseconds_pqn);
 			tempo_microseconds_pqn
 			    = me.u.tempo_in_microseconds_pqn;
 		} else {
+			debugmsg(3, "playing midi event %02x %02x %02x\n",
+			    me.u.raw_midievent[0],
+			    me.u.raw_midievent[1],
+			    me.u.raw_midievent[2]);
 			r = mio_write(mididev, me.u.raw_midievent,
 			    sizeof(me.u.raw_midievent));
 			if (r < sizeof(me.u.raw_midievent)) {
@@ -575,6 +644,9 @@ turn_on_next_lights(struct mio_hdl *mididev,
 	struct midievent me;
 	int next_event_at_ticks, r;
 	uint8_t raw_midievent[3];
+	uint8_t note;
+
+	debugmsg(3, "turning on lights\n");
 
 	if (*lighted_keys_index >= me_buffer->event_count)
 		return 0;
@@ -599,6 +671,8 @@ turn_on_next_lights(struct mio_hdl *mididev,
 		 * lights, but 1 is enough.
 		 */
 		if (raw_midievent[0] == MIDI_NOTE_ON) {
+			note = raw_midievent[1] & 0x7f;
+			debugmsg(3, "turning on note %d\n", note);
 			raw_midievent[2] = 1;
 			r = mio_write(mididev, raw_midievent,
 			    sizeof(raw_midievent));
@@ -606,15 +680,19 @@ turn_on_next_lights(struct mio_hdl *mididev,
 				warnx("mio_write returned an error");
 				return -1;
 			}
-			notes_waiting[ raw_midievent[1] & 0x7f ] = 1;
+			notes_waiting[note] = 1;
 		}
 
-		if (++(*lighted_keys_index) >= me_buffer->event_count)
+		if (++(*lighted_keys_index) >= me_buffer->event_count) {
+			debugmsg(3, "lighted keys index is in the end\n");
 			break;
+		}
 
 		me = me_buffer->events[ *lighted_keys_index ];
 
 	} while (me.at_ticks <= next_event_at_ticks);
+
+	debugmsg(3, "done turning on lights\n");
 
 	return 0;
 }
@@ -648,6 +726,11 @@ wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
 	for (;;) {
 		mio_pollfd(mididev, pfd, POLLIN);
 
+		if (timeout == -1)
+			debugmsg(3, "waiting user\n");
+		else
+			debugmsg(3, "waiting user with timeout %d\n", timeout);
+
 		/* XXX a new full timeout after a note...
 		 * XXX not right, should lookup the clock */
 		if ((r = poll(pfd, nfds, timeout)) == -1) {
@@ -658,6 +741,7 @@ wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
 
 		if (r == 0) {
 			/* timeout hits, playback should continue */
+			debugmsg(3, "timeout reached, playback continues\n");
 			goto out;
 		}
 
@@ -687,14 +771,21 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 {
 	size_t i, read_bytes;
 	int must_wait, r;
+	uint8_t note;
 
 	must_wait = 0;
 	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
-		if (notes_waiting[i])
+		if (notes_waiting[i]) {
+			debugmsg(3, "must wait for %d\n", i);
 			must_wait = 1;
+		}
 	}
-	if (!must_wait)
+	if (!must_wait) {
+		debugmsg(3, "no notes to wait for\n");
 		return 0;
+	}
+
+	debugmsg(3, "waiting for notes\n");
 
 	read_bytes = mio_read(mididev, &raw_midievent[3-(*bytes_to_read)],
 			      *bytes_to_read);
@@ -713,6 +804,7 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 		 * XXX But we should probably also understand
 		 * XXX something about the possible inputs we
 		 * XXX might be receiving. */
+		debugmsg(4, "skipping input event %02x\n", raw_midievent[0]);
 		raw_midievent[0] = raw_midievent[1];
 		raw_midievent[1] = raw_midievent[2];
 		*bytes_to_read = 1;
@@ -722,13 +814,15 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 	/* Exact match means the noteon/noteoff events occur
 	 * on channel 1. */
 	if (raw_midievent[0] == MIDI_NOTE_ON) {
+		note = raw_midievent[1] & 0x7f;
+		debugmsg(3, "turning note %d off\n", note);
 		raw_midievent[0] = MIDI_NOTE_OFF;
 		r = mio_write(mididev, raw_midievent, 3);
 		if (r < 3) {
 			warnx("mio_write returned an error");
 			return -1;
 		}
-		notes_waiting[ raw_midievent[1] & 0x7f ] = 0;
+		notes_waiting[note] = 0;
 	}
 
 	*bytes_to_read = 3;
@@ -738,8 +832,10 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 		if (notes_waiting[i])
 			must_wait = 1;
 	}
-	if (!must_wait)
+	if (!must_wait) {
+		debugmsg(3, "no notes to wait for\n");
 		return 0;
+	}
 
 	return 1;
 }
