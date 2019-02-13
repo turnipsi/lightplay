@@ -49,6 +49,12 @@
 
 enum midievent_type { MIDIEVENT_CHANNEL_VOICE, MIDIEVENT_TEMPO_CHANGE };
 
+struct mididevice {
+	struct mio_hdl		*dev;
+	struct pollfd		*pfd;
+	nfds_t			 nfds;
+};
+
 struct midievent {
 	enum midievent_type	type;
 	int			at_ticks;
@@ -66,23 +72,25 @@ struct midievent_buffer {
 
 void	add_notes_waiting(int *, uint8_t *);
 int	compare_midievent_positions(const void *, const void *);
+void	close_mididevice(const struct mididevice *);
 void	debugmsg(int, const char *, ...);
-int	do_sequencing(FILE *, struct mio_hdl *);
+int	do_sequencing(FILE *, const struct mididevice *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
 int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
     uint8_t *);
+int	open_mididevice(struct mididevice *);
 int	parse_meta_event(FILE *, uint32_t *, struct midievent *, int *, int);
 int	parse_next_track(FILE *, struct midievent_buffer *);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
     uint16_t *);
-int	playback_midievents(struct mio_hdl *, struct midievent_buffer *,
-    uint16_t);
-int	turn_on_next_lights(struct mio_hdl *, struct midievent_buffer *,
-    size_t *, int *);
+int	playback_midievents(const struct mididevice *,
+    struct midievent_buffer *, uint16_t);
+int	turn_on_next_lights(const struct mididevice *,
+    struct midievent_buffer *, size_t *, int *);
 void	usage(void);
-int	wait_for_event(struct mio_hdl *, int, int *);
-int	wait_for_notes(struct mio_hdl *, int *, uint8_t *, size_t *);
+int	wait_for_event(const struct mididevice *, int, int *);
+int	wait_for_notes(const struct mididevice *, int *, uint8_t *, size_t *);
 
 /* XXX const could be used where applicable */
 
@@ -94,7 +102,7 @@ main(int argc, char *argv[])
 {
 	FILE *midifile;
 	const char *midifile_path;
-	struct mio_hdl *mididev;
+	struct mididevice mididev;
 	int ch, ret;
 
 	debug_level = 0;
@@ -123,13 +131,11 @@ main(int argc, char *argv[])
 	midifile_path = argv[0];
 
 	debugmsg(1, "opening midi file %s\n", midifile_path);
-
 	if ((midifile = fopen(midifile_path, "r")) == NULL)
 		err(1, "could not open midi file \"%s\"", midifile_path);
 
 	debugmsg(1, "opening midi device\n");
-
-	if ((mididev = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL)
+	if (open_mididevice(&mididev) == -1)
 		errx(1, "could not open midi device");
 
 #ifdef HAVE_PLEDGE
@@ -138,9 +144,9 @@ main(int argc, char *argv[])
 		err(1, "pledge");
 #endif
 
-	ret = do_sequencing(midifile, mididev);
+	ret = do_sequencing(midifile, &mididev);
 
-	mio_close(mididev);
+	close_mididevice(&mididev);
 
 	if (fclose(midifile) == EOF)
 		warn("could not close midi file");
@@ -173,7 +179,46 @@ usage(void)
 }
 
 int
-do_sequencing(FILE *midifile, struct mio_hdl *mididev)
+open_mididevice(struct mididevice *mididev)
+{
+	struct mio_hdl *mio;
+	struct pollfd *pfd;
+	nfds_t nfds;
+
+	if ((mio = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL) {
+		warnx("mio_open() error\n");
+		return -1;
+	}
+
+	nfds = mio_nfds(mio);
+	if ((pfd = calloc(nfds, sizeof(struct pollfd))) == NULL) {
+		warn("calloc");
+		mio_close(mio);
+		return -1;
+	}
+
+	if (mio_pollfd(mio, pfd, POLLIN) != 1) {
+		warnx("unexpected mio_pollfd() return value");
+		mio_close(mio);
+		return -1;
+	}
+
+	mididev->dev = mio;
+	mididev->pfd = pfd;
+	mididev->nfds = nfds;
+
+	return 0;
+}
+
+void
+close_mididevice(const struct mididevice *mididev)
+{
+	mio_close(mididev->dev);
+	free(mididev->pfd);
+}
+
+int
+do_sequencing(FILE *midifile, const struct mididevice *mididev)
 {
 	struct midievent_buffer me_buffer;
 	int ret;
@@ -569,7 +614,7 @@ parse_meta_event(FILE *midifile, uint32_t *current_byte,
 }
 
 int
-playback_midievents(struct mio_hdl *mididev,
+playback_midievents(const struct mididevice *mididev,
     struct midievent_buffer *me_buffer, uint16_t ticks_pqn)
 {
 	struct midievent me;
@@ -628,7 +673,7 @@ playback_midievents(struct mio_hdl *mididev,
 			    me.u.raw_midievent[1],
 			    me.u.raw_midievent[2]);
 			if (!dry_run) {
-				r = mio_write(mididev, me.u.raw_midievent,
+				r = mio_write(mididev->dev, me.u.raw_midievent,
 				    sizeof(me.u.raw_midievent));
 				if (r < sizeof(me.u.raw_midievent)) {
 					warnx("mio_write returned an error");
@@ -644,7 +689,7 @@ playback_midievents(struct mio_hdl *mididev,
 }
 
 int
-turn_on_next_lights(struct mio_hdl *mididev,
+turn_on_next_lights(const struct mididevice *mididev,
     struct midievent_buffer *me_buffer, size_t *lighted_keys_index,
     int *notes_waiting)
 {
@@ -682,7 +727,7 @@ turn_on_next_lights(struct mio_hdl *mididev,
 			debugmsg(3, "turning on light on note %d\n", note);
 			raw_midievent[2] = 1;
 			if (!dry_run) {
-				r = mio_write(mididev, raw_midievent,
+				r = mio_write(mididev->dev, raw_midievent,
 				    sizeof(raw_midievent));
 				if (r < sizeof(raw_midievent)) {
 					warnx("mio_write returned an error");
@@ -707,25 +752,15 @@ turn_on_next_lights(struct mio_hdl *mididev,
 }
 
 int
-wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
+wait_for_event(const struct mididevice *mididev, int wait_microseconds,
     int *notes_waiting)
 {
-	struct pollfd *pfd;
-	nfds_t nfds;
 	size_t i, bytes_to_read;
 	int timeout, r, ret;
 	uint8_t raw_midievent[3];
 
 	if (dry_run)
 		return 0;
-
-	/* XXX this can probably be done only once? */
-	/* XXX error handling in mio_nfds() and mio_pollfd() ? */
-	nfds = mio_nfds(mididev);
-	if ((pfd = calloc(nfds, sizeof(struct pollfd))) == NULL) {
-		warn("calloc");
-		return -1;
-	}
 
 	timeout = (wait_microseconds > 0)
 		    ? (wait_microseconds / 1000)
@@ -736,8 +771,6 @@ wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
 	ret = 0;
 
 	for (;;) {
-		mio_pollfd(mididev, pfd, POLLIN);
-
 		if (timeout == -1)
 			debugmsg(3, "waiting user\n");
 		else
@@ -745,30 +778,27 @@ wait_for_event(struct mio_hdl *mididev, int wait_microseconds,
 
 		/* XXX a new full timeout after a note...
 		 * XXX not right, should lookup the clock */
-		if ((r = poll(pfd, nfds, timeout)) == -1) {
+		if ((r = poll(mididev->pfd, mididev->nfds, timeout)) == -1) {
 			warn("poll");
 			ret = -1;
-			goto out;
+			break;
 		}
 
 		if (r == 0) {
 			/* timeout hits, playback should continue */
 			debugmsg(3, "timeout reached, playback continues\n");
-			goto out;
+			break;
 		}
 
 		r = wait_for_notes(mididev, notes_waiting, raw_midievent,
 		    &bytes_to_read);
 		if (r == -1) {
 			ret = -1;
-			goto out;
+			break;
 		}
 		if (r == 0)
 			break;
 	}
-
-out:
-	free(pfd);	/* XXX do this only once? */
 
 	return ret;
 }
@@ -778,7 +808,7 @@ out:
  * -1 == error occurred */
 
 int
-wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
+wait_for_notes(const struct mididevice *mididev, int *notes_waiting,
    uint8_t *raw_midievent, size_t *bytes_to_read)
 {
 	size_t i, read_bytes;
@@ -801,7 +831,7 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 
 	debugmsg(3, "waiting for notes\n");
 
-	read_bytes = mio_read(mididev, &raw_midievent[3-(*bytes_to_read)],
+	read_bytes = mio_read(mididev->dev, &raw_midievent[3-(*bytes_to_read)],
 			      *bytes_to_read);
 	if (read_bytes == 0) {
 		warnx("mio_read error");
@@ -831,7 +861,7 @@ wait_for_notes(struct mio_hdl *mididev, int *notes_waiting,
 		note = raw_midievent[1] & 0x7f;
 		debugmsg(3, "turning note %d off\n", note);
 		raw_midievent[0] = MIDI_NOTE_OFF;
-		r = mio_write(mididev, raw_midievent, 3);
+		r = mio_write(mididev->dev, raw_midievent, 3);
 		if (r < 3) {
 			warnx("mio_write returned an error");
 			return -1;
