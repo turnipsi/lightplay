@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "config.h"
@@ -89,7 +90,7 @@ int	playback_midievents(const struct mididevice *,
 int	turn_on_next_lights(const struct mididevice *,
     struct midievent_buffer *, size_t *, int *);
 void	usage(void);
-int	wait_for_event(const struct mididevice *, int, int *);
+int	wait_for_event(const struct mididevice *, struct timespec *, int *);
 int	wait_for_notes(const struct mididevice *, int *, uint8_t *, size_t *);
 
 /* XXX const could be used where applicable */
@@ -619,6 +620,7 @@ playback_midievents(const struct mididevice *mididev,
 {
 	struct midievent me;
 	int notes_waiting[MAX_ACTIVE_NOTES];
+	struct timespec current_time, next_event_time;
 	size_t i, lighted_keys_index;
 	int at_ticks_difference, current_at_ticks, next_event_at_ticks;
 	int tempo_microseconds_pqn, wait_microseconds;
@@ -632,6 +634,11 @@ playback_midievents(const struct mididevice *mididev,
 	current_at_ticks = 0;
 	lighted_keys_index = 0;
 	tempo_microseconds_pqn = 500000;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &current_time) == -1) {
+		warn("clock_gettime()");
+		return -1;
+	}
 
 	for (i = 0; i < me_buffer->event_count; i++) {
 		debugmsg(5, "checking next midi event\n");
@@ -652,12 +659,17 @@ playback_midievents(const struct mididevice *mididev,
 			    = next_event_at_ticks - current_at_ticks;
 		}
 
-		/* XXX we never actually lookup the clock... which means
-		 * XXX the playing has to be somewhat inaccurate... */
 		wait_microseconds = at_ticks_difference
 		    * (tempo_microseconds_pqn / ticks_pqn);
 
-		if (wait_for_event(mididev, wait_microseconds, notes_waiting)
+		next_event_time = current_time;
+		next_event_time.tv_nsec += 1000 * wait_microseconds;
+		while (next_event_time.tv_nsec >= 1000000000) {
+			next_event_time.tv_sec += 1;
+			next_event_time.tv_nsec -= 1000000000;
+		}
+
+		if (wait_for_event(mididev, &next_event_time, notes_waiting)
 		    == -1) {
 			return -1;
 		}
@@ -683,6 +695,7 @@ playback_midievents(const struct mididevice *mididev,
 		}
 
 		current_at_ticks = next_event_at_ticks;
+		current_time = next_event_time;
 	}
 
 	return 0;
@@ -752,32 +765,38 @@ turn_on_next_lights(const struct mididevice *mididev,
 }
 
 int
-wait_for_event(const struct mididevice *mididev, int wait_microseconds,
-    int *notes_waiting)
+wait_for_event(const struct mididevice *mididev,
+    struct timespec *nextev_time, int *notes_waiting)
 {
 	size_t i, bytes_to_read;
 	int timeout, r, ret;
+	struct timespec current_time;
 	uint8_t raw_midievent[3];
 
 	if (dry_run)
 		return 0;
-
-	timeout = (wait_microseconds > 0)
-		    ? (wait_microseconds / 1000)
-		    : -1;
 
 	bytes_to_read = 3;
 
 	ret = 0;
 
 	for (;;) {
-		if (timeout == -1)
-			debugmsg(3, "waiting user\n");
-		else
-			debugmsg(3, "waiting user with timeout %d\n", timeout);
+		if (clock_gettime(CLOCK_MONOTONIC, &current_time) == -1) {
+			warn("clock_gettime()");
+			return -1;
+		}
 
-		/* XXX a new full timeout after a note...
-		 * XXX not right, should lookup the clock */
+		timeout =
+		   1000 * (nextev_time->tv_sec - current_time.tv_sec)
+		     + (nextev_time->tv_nsec - current_time.tv_nsec) / 1000000;
+
+		if (timeout < 0) {
+			timeout = -1;
+			debugmsg(3, "waiting user\n");
+		} else {
+			debugmsg(3, "waiting user with timeout %d\n", timeout);
+		}
+
 		if ((r = poll(mididev->pfd, mididev->nfds, timeout)) == -1) {
 			warn("poll");
 			ret = -1;
@@ -796,8 +815,15 @@ wait_for_event(const struct mididevice *mididev, int wait_microseconds,
 			ret = -1;
 			break;
 		}
-		if (r == 0)
+		if (r == 0) {
+			/* waited for midi input and can now continue */
+			if (clock_gettime(CLOCK_MONOTONIC, nextev_time)
+			    == -1) {
+				warn("clock_gettime()");
+				return -1;
+			}
 			break;
+		}
 	}
 
 	return ret;
