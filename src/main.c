@@ -79,6 +79,7 @@ int	do_sequencing(FILE *, const struct mididevice *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
 int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
     uint8_t *);
+int	notes_to_wait_for(int *);
 int	open_mididevice(struct mididevice *);
 int	parse_meta_event(FILE *, uint32_t *, struct midievent *, int *, int);
 int	parse_next_track(FILE *, struct midievent_buffer *);
@@ -90,7 +91,7 @@ int	playback_midievents(const struct mididevice *,
 int	turn_on_next_lights(const struct mididevice *,
     struct midievent_buffer *, size_t *, int *);
 void	usage(void);
-int	wait_for_event(const struct mididevice *, struct timespec *, int *);
+int	wait_for_event(const struct mididevice *, int, int *);
 int	wait_for_notes(const struct mididevice *, int *, uint8_t *, size_t *);
 
 /* XXX const could be used where applicable */
@@ -620,7 +621,6 @@ playback_midievents(const struct mididevice *mididev,
 {
 	struct midievent me;
 	int notes_waiting[MAX_ACTIVE_NOTES];
-	struct timespec current_time, next_event_time;
 	size_t i, lighted_keys_index;
 	int at_ticks_difference, current_at_ticks, next_event_at_ticks;
 	int tempo_microseconds_pqn, wait_microseconds;
@@ -635,41 +635,33 @@ playback_midievents(const struct mididevice *mididev,
 	lighted_keys_index = 0;
 	tempo_microseconds_pqn = 500000;
 
-	if (clock_gettime(CLOCK_MONOTONIC, &current_time) == -1) {
-		warn("clock_gettime()");
-		return -1;
-	}
-
 	for (i = 0; i < me_buffer->event_count; i++) {
 		debugmsg(5, "checking next midi event\n");
 
 		me = me_buffer->events[i];
 		next_event_at_ticks = me.at_ticks;
 
-		if (lighted_keys_index <= i) {
+		debugmsg(3, "1. lighted_keys_index=%d i=%d\n", lighted_keys_index,
+		    i);
+		if (!notes_to_wait_for(notes_waiting)) {
 			/* this increments lighted_keys_index */
 			turn_on_next_lights(mididev, me_buffer,
 			    &lighted_keys_index, notes_waiting);
 		}
 
+		debugmsg(3, "2. lighted_keys_index=%d i=%d\n", lighted_keys_index,
+		    i);
 		if (lighted_keys_index <= i) {
-			at_ticks_difference = 0;
+			debugmsg(3, "lighted_keys ARE WAITED\n");
+			wait_microseconds = -1;
 		} else {
 			at_ticks_difference
 			    = next_event_at_ticks - current_at_ticks;
+			wait_microseconds = at_ticks_difference
+			    * (tempo_microseconds_pqn / ticks_pqn);
 		}
 
-		wait_microseconds = at_ticks_difference
-		    * (tempo_microseconds_pqn / ticks_pqn);
-
-		next_event_time = current_time;
-		next_event_time.tv_nsec += 1000 * wait_microseconds;
-		while (next_event_time.tv_nsec >= 1000000000) {
-			next_event_time.tv_sec += 1;
-			next_event_time.tv_nsec -= 1000000000;
-		}
-
-		if (wait_for_event(mididev, &next_event_time, notes_waiting)
+		if (wait_for_event(mididev, wait_microseconds, notes_waiting)
 		    == -1) {
 			return -1;
 		}
@@ -695,8 +687,19 @@ playback_midievents(const struct mididevice *mididev,
 		}
 
 		current_at_ticks = next_event_at_ticks;
-		current_time = next_event_time;
 	}
+
+	return 0;
+}
+
+int
+notes_to_wait_for(int *notes_waiting)
+{
+	int i;
+
+	for (i = 0; i < MAX_ACTIVE_NOTES; i++)
+		if (notes_waiting[i])
+			return 1;
 
 	return 0;
 }
@@ -765,12 +768,12 @@ turn_on_next_lights(const struct mididevice *mididev,
 }
 
 int
-wait_for_event(const struct mididevice *mididev,
-    struct timespec *nextev_time, int *notes_waiting)
+wait_for_event(const struct mididevice *mididev, int wait_microseconds,
+    int *notes_waiting)
 {
 	size_t i, bytes_to_read;
 	int timeout, r, ret;
-	struct timespec current_time;
+	struct timespec current_time, nextev_time;
 	uint8_t raw_midievent[3];
 
 	if (dry_run)
@@ -780,21 +783,37 @@ wait_for_event(const struct mididevice *mididev,
 
 	ret = 0;
 
-	for (;;) {
+	if (wait_microseconds >= 0) {
 		if (clock_gettime(CLOCK_MONOTONIC, &current_time) == -1) {
 			warn("clock_gettime()");
 			return -1;
 		}
 
-		timeout =
-		   1000 * (nextev_time->tv_sec - current_time.tv_sec)
-		     + (nextev_time->tv_nsec - current_time.tv_nsec) / 1000000;
+		nextev_time = current_time;
+		nextev_time.tv_nsec += 1000 * wait_microseconds;
+		while (nextev_time.tv_nsec >= 1000000000) {
+			nextev_time.tv_sec += 1;
+			nextev_time.tv_nsec -= 1000000000;
+		}
+	}
 
-		if (timeout < 0) {
-			timeout = -1;
-			debugmsg(3, "waiting user\n");
-		} else {
+	for (;;) {
+		if (wait_microseconds >= 0) {
+			if (clock_gettime(CLOCK_MONOTONIC, &current_time)
+			    == -1) {
+				warn("clock_gettime()");
+				return -1;
+			}
+			timeout =
+			   1000 * (nextev_time.tv_sec - current_time.tv_sec)
+			     + (nextev_time.tv_nsec - current_time.tv_nsec)
+				 / 1000000;
+			if (timeout < 0)
+				timeout = 0;
 			debugmsg(3, "waiting user with timeout %d\n", timeout);
+		} else {
+			debugmsg(3, "waiting user\n");
+			timeout = -1;
 		}
 
 		if ((r = poll(mididev->pfd, mididev->nfds, timeout)) == -1) {
@@ -815,15 +834,8 @@ wait_for_event(const struct mididevice *mididev,
 			ret = -1;
 			break;
 		}
-		if (r == 0) {
-			/* waited for midi input and can now continue */
-			if (clock_gettime(CLOCK_MONOTONIC, nextev_time)
-			    == -1) {
-				warn("clock_gettime()");
-				return -1;
-			}
+		if (r == 0)
 			break;
-		}
 	}
 
 	return ret;
@@ -843,17 +855,8 @@ wait_for_notes(const struct mididevice *mididev, int *notes_waiting,
 
 	assert(dry_run == 0);
 
-	must_wait = 0;
-	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
-		if (notes_waiting[i]) {
-			debugmsg(3, "must wait for %d\n", i);
-			must_wait = 1;
-		}
-	}
-	if (!must_wait) {
-		debugmsg(3, "no notes to wait for\n");
+	if (!notes_to_wait_for(notes_waiting))
 		return 0;
-	}
 
 	debugmsg(3, "waiting for notes\n");
 
@@ -897,15 +900,8 @@ wait_for_notes(const struct mididevice *mididev, int *notes_waiting,
 
 	*bytes_to_read = 3;
 
-	must_wait = 0;
-	for (i = 0; i < MAX_ACTIVE_NOTES; i++) {
-		if (notes_waiting[i])
-			must_wait = 1;
-	}
-	if (!must_wait) {
-		debugmsg(3, "no notes to wait for\n");
+	if (!notes_to_wait_for(notes_waiting))
 		return 0;
-	}
 
 	return 1;
 }
