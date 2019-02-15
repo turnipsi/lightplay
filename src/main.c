@@ -187,6 +187,9 @@ open_mididevice(struct mididevice *mididev)
 	struct pollfd *pfd;
 	nfds_t nfds;
 
+	if (dry_run)
+		return 0;
+
 	if ((mio = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL) {
 		warnx("mio_open() error\n");
 		return -1;
@@ -215,6 +218,9 @@ open_mididevice(struct mididevice *mididev)
 void
 close_mididevice(const struct mididevice *mididev)
 {
+	if (dry_run)
+		return 0;
+
 	mio_close(mididev->dev);
 	free(mididev->pfd);
 }
