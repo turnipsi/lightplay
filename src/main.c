@@ -621,7 +621,7 @@ playback_midievents(const struct mididevice *mididev,
 {
 	struct midievent me;
 	int notes_waiting[MAX_ACTIVE_NOTES];
-	size_t i, lighted_keys_index;
+	size_t i, lighted_keys_index, next_lighted_keys_index;
 	int at_ticks_difference, current_at_ticks, next_event_at_ticks;
 	int tempo_microseconds_pqn, wait_microseconds;
 	int r;
@@ -633,6 +633,7 @@ playback_midievents(const struct mididevice *mididev,
 
 	current_at_ticks = 0;
 	lighted_keys_index = 0;
+	next_lighted_keys_index = 0;
 	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
@@ -644,9 +645,10 @@ playback_midievents(const struct mididevice *mididev,
 		debugmsg(3, "1. lighted_keys_index=%d i=%d\n", lighted_keys_index,
 		    i);
 		if (!notes_to_wait_for(notes_waiting)) {
-			/* this increments lighted_keys_index */
+			lighted_keys_index = next_lighted_keys_index;
+			/* this increments next_lighted_keys_index */
 			turn_on_next_lights(mididev, me_buffer,
-			    &lighted_keys_index, notes_waiting);
+			    &next_lighted_keys_index, notes_waiting);
 		}
 
 		debugmsg(3, "2. lighted_keys_index=%d i=%d\n", lighted_keys_index,
@@ -671,10 +673,11 @@ playback_midievents(const struct mididevice *mididev,
 			    tempo_microseconds_pqn);
 			tempo_microseconds_pqn
 			    = me.u.tempo_in_microseconds_pqn;
-		} else {
+		} else if (me.u.raw_midievent[0] != MIDI_NOTE_ON
+		    && me.u.raw_midievent[1] != MIDI_NOTE_OFF) {
+			/* play events if those are not on channel one */
 			debugmsg(3, "playing midi event %02x %02x %02x\n",
-			    me.u.raw_midievent[0],
-			    me.u.raw_midievent[1],
+			    me.u.raw_midievent[0], me.u.raw_midievent[1],
 			    me.u.raw_midievent[2]);
 			if (!dry_run) {
 				r = mio_write(mididev->dev, me.u.raw_midievent,
