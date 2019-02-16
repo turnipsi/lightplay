@@ -914,7 +914,7 @@ wait_for_notes(const struct mididevice *mididev, int *notes_waiting,
 {
 	size_t i, read_bytes;
 	int must_wait, r;
-	uint8_t note;
+	uint8_t note, velocity;
 
 	assert(dry_run == 0);
 
@@ -951,14 +951,22 @@ wait_for_notes(const struct mididevice *mididev, int *notes_waiting,
 	 * on channel 1. */
 	if (raw_midievent[0] == MIDI_NOTE_ON) {
 		note = raw_midievent[1] & 0x7f;
-		debugmsg(3, "turning note %d off\n", note);
-		raw_midievent[0] = MIDI_NOTE_OFF;
-		r = mio_write(mididev->dev, raw_midievent, 3);
-		if (r < 3) {
-			warnx("mio_write returned an error");
-			return -1;
+		velocity = raw_midievent[2] & 0x7f;
+		/* XXX oddness, note off generates note on as well ...
+		 * XXX check velocity to see if we are interested in this
+		 * XXX event... what is the note on event with velocity 0? */
+		if (velocity > 0) {
+			debugmsg(3,
+			    "turning note light %d off, note velocity %02x\n",
+			    note, velocity);
+			raw_midievent[0] = MIDI_NOTE_OFF;
+			r = mio_write(mididev->dev, raw_midievent, 3);
+			if (r < 3) {
+				warnx("mio_write returned an error");
+				return -1;
+			}
+			notes_waiting[note] = 0;
 		}
-		notes_waiting[note] = 0;
 	}
 
 	*bytes_to_read = 3;
