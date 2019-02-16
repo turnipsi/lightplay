@@ -76,6 +76,7 @@ int	compare_midievent_positions(const void *, const void *);
 void	close_mididevice(const struct mididevice *);
 void	debugmsg(int, const char *, ...);
 void	debugmsg_lighted_keys(int *);
+void	debugmsg_midievent(int, struct midievent);
 void	debugmsg_no_prefix(int, const char *, ...);
 int	do_sequencing(FILE *, const struct mididevice *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
@@ -661,10 +662,11 @@ playback_midievents(const struct mididevice *mididev,
 	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
-		debugmsg(5, "checking midi event %d\n", i);
-
 		me = me_buffer->events[i];
 		next_event_at_ticks = me.at_ticks;
+
+		debugmsg(3, "checking midi event at index %d: ", i);
+		debugmsg_midievent(3, me);
 
 		if (i == next_lighted_keys_index) {
 			if (dry_run) {
@@ -744,6 +746,26 @@ debugmsg_lighted_keys(int *notes_waiting)
 		if (notes_waiting[i])
 			debugmsg_no_prefix(2, " %d", i);
 	debugmsg_no_prefix(2, "\n");
+}
+
+void
+debugmsg_midievent(int msg_level, struct midievent me)
+{
+	switch(me.type) {
+	case MIDIEVENT_CHANNEL_VOICE:
+		debugmsg_no_prefix(msg_level, "channel voice %02x %02x %02x\n",
+		    me.u.raw_midievent[0],
+		    me.u.raw_midievent[1],
+		    me.u.raw_midievent[2]);
+		break;
+	case MIDIEVENT_TEMPO_CHANGE:
+		debugmsg_no_prefix(msg_level,
+		    "tempo change to %d microseconds per quarter note\n",
+		    me.u.tempo_in_microseconds_pqn);
+		break;
+	default:
+		assert(0);
+	}
 }
 
 int
