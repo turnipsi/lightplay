@@ -75,6 +75,8 @@ void	add_notes_waiting(int *, uint8_t *);
 int	compare_midievent_positions(const void *, const void *);
 void	close_mididevice(const struct mididevice *);
 void	debugmsg(int, const char *, ...);
+void	debugmsg_lighted_keys(int *);
+void	debugmsg_no_prefix(int, const char *, ...);
 int	do_sequencing(FILE *, const struct mididevice *);
 int	get_next_variable_length_quantity(FILE *, uint32_t *);
 int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
@@ -82,7 +84,7 @@ int	get_next_midi_event(FILE *, uint32_t *, struct midievent *, int *,
 int	notes_to_wait_for(int *);
 int	open_mididevice(struct mididevice *);
 int	parse_meta_event(FILE *, uint32_t *, struct midievent *, int *, int);
-int	parse_next_track(FILE *, struct midievent_buffer *);
+int	parse_next_track(FILE *, struct midievent_buffer *, size_t);
 int	parse_smf_header(FILE *, uint16_t *, uint16_t *);
 int	parse_standard_midi_file(FILE *, struct midievent_buffer *,
     uint16_t *);
@@ -173,6 +175,20 @@ debugmsg(int msg_level, const char *fmt, ...)
 	va_end(va);
 }
 
+/* XXX code duplication */
+void
+debugmsg_no_prefix(int msg_level, const char *fmt, ...)
+{
+	va_list va;
+
+	if (debug_level < msg_level)
+		return;
+
+	va_start(va, fmt);
+	(void) vprintf(fmt, va);
+	va_end(va);
+}
+
 void
 usage(void)
 {
@@ -219,7 +235,7 @@ void
 close_mididevice(const struct mididevice *mididev)
 {
 	if (dry_run)
-		return 0;
+		return;
 
 	mio_close(mididev->dev);
 	free(mididev->pfd);
@@ -284,15 +300,16 @@ parse_standard_midi_file(FILE *midifile, struct midievent_buffer *me_buffer,
     uint16_t *ticks_pqn)
 {
 	uint16_t track_count;
-	int i, ret;
+	size_t track_num;
+	int ret;
 
 	debugmsg(2, "starting to parse standard midi file\n");
 
 	if ((ret = parse_smf_header(midifile, &track_count, ticks_pqn)) == -1)
 		return ret;
 
-	for (i = 0; i < track_count; i++) {
-		ret = parse_next_track(midifile, me_buffer);
+	for (track_num = 0; track_num < track_count; track_num++) {
+		ret = parse_next_track(midifile, me_buffer, track_num);
 		if (ret == -1)
 			return ret;
 	}
@@ -376,7 +393,8 @@ parse_smf_header(FILE *midifile, uint16_t *track_count, uint16_t *ticks_pqn)
 }
 
 int
-parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
+parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer,
+    size_t track_num)
 {
 	char mtrk[5];
 	struct midievent midievent;
@@ -385,7 +403,7 @@ parse_next_track(FILE *midifile, struct midievent_buffer *me_buffer)
 	int at_ticks, delta_time, track_found, ret;
 	uint8_t prev_event_type;
 
-	debugmsg(3, "parsing next midi track\n");
+	debugmsg(3, "parsing midi track %d\n", track_num);
 
 	prev_event_type = 0x00;
 
@@ -627,7 +645,7 @@ playback_midievents(const struct mididevice *mididev,
 {
 	struct midievent me;
 	int notes_waiting[MAX_ACTIVE_NOTES];
-	size_t i, lighted_keys_index, next_lighted_keys_index;
+	size_t i, j, lighted_keys_index, next_lighted_keys_index;
 	int at_ticks_difference, current_at_ticks, next_event_at_ticks;
 	int tempo_microseconds_pqn, wait_microseconds;
 	int r;
@@ -643,24 +661,27 @@ playback_midievents(const struct mididevice *mididev,
 	tempo_microseconds_pqn = 500000;
 
 	for (i = 0; i < me_buffer->event_count; i++) {
-		debugmsg(5, "checking next midi event\n");
+		debugmsg(5, "checking midi event %d\n", i);
 
 		me = me_buffer->events[i];
 		next_event_at_ticks = me.at_ticks;
 
-		debugmsg(3, "1. lighted_keys_index=%d i=%d\n", lighted_keys_index,
-		    i);
-		if (!notes_to_wait_for(notes_waiting)) {
+		if (i == next_lighted_keys_index) {
+			if (dry_run) {
+				for (j = 0; j < MAX_ACTIVE_NOTES; j++)
+					notes_waiting[j] = 0;
+			}
 			lighted_keys_index = next_lighted_keys_index;
 			/* this increments next_lighted_keys_index */
 			turn_on_next_lights(mididev, me_buffer,
 			    &next_lighted_keys_index, notes_waiting);
+			debugmsg(3, "lighted keys event is now %d (next %d)\n",
+			    lighted_keys_index, next_lighted_keys_index);
 		}
 
-		debugmsg(3, "2. lighted_keys_index=%d i=%d\n", lighted_keys_index,
-		    i);
+		debugmsg_lighted_keys(notes_waiting);
+
 		if (lighted_keys_index <= i) {
-			debugmsg(3, "lighted_keys ARE WAITED\n");
 			wait_microseconds = -1;
 		} else {
 			at_ticks_difference
@@ -711,6 +732,18 @@ notes_to_wait_for(int *notes_waiting)
 			return 1;
 
 	return 0;
+}
+
+void
+debugmsg_lighted_keys(int *notes_waiting)
+{
+	size_t i;
+
+	debugmsg(2, "lighted keys are:");
+	for (i = 0; i < MAX_ACTIVE_NOTES; i++)
+		if (notes_waiting[i])
+			debugmsg_no_prefix(2, " %d", i);
+	debugmsg_no_prefix(2, "\n");
 }
 
 int
@@ -832,7 +865,6 @@ wait_for_event(const struct mididevice *mididev, int wait_microseconds,
 		}
 
 		if (r == 0) {
-			/* timeout hits, playback should continue */
 			debugmsg(3, "timeout reached, playback continues\n");
 			break;
 		}
