@@ -193,7 +193,7 @@ debugmsg_no_prefix(int msg_level, const char *fmt, ...)
 void
 usage(void)
 {
-	(void) fprintf(stderr, "Usage: lightplay [-d] midifile\n");
+	(void) fprintf(stderr, "Usage: lightplay [-dn] midifile\n");
 	exit(1);
 }
 
