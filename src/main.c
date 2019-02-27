@@ -661,6 +661,10 @@ playback_midievents(const struct mididevice *mididev,
 	next_lighted_keys_index = 0;
 	tempo_microseconds_pqn = 500000;
 
+	turn_on_next_lights(mididev, me_buffer, &next_lighted_keys_index,
+	    notes_waiting);
+	lighted_keys_index = next_lighted_keys_index;
+
 	for (i = 0; i < me_buffer->event_count; i++) {
 		me = me_buffer->events[i];
 		next_event_at_ticks = me.at_ticks;
@@ -774,7 +778,7 @@ turn_on_next_lights(const struct mididevice *mididev,
     int *notes_waiting)
 {
 	struct midievent me;
-	int next_event_at_ticks, r;
+	int found_lighted_keys_event, next_event_at_ticks, r;
 	uint8_t raw_midievent[3];
 	uint8_t note;
 
@@ -782,6 +786,8 @@ turn_on_next_lights(const struct mididevice *mididev,
 
 	if (*lighted_keys_index >= me_buffer->event_count)
 		return 0;
+
+	found_lighted_keys_event = 0;
 
 	me = me_buffer->events[ *lighted_keys_index ];
 	next_event_at_ticks = me.at_ticks;
@@ -815,6 +821,7 @@ turn_on_next_lights(const struct mididevice *mididev,
 				}
 			}
 			notes_waiting[note] = 1;
+			found_lighted_keys_event = 1;
 		}
 
 		if (++(*lighted_keys_index) >= me_buffer->event_count) {
@@ -824,7 +831,8 @@ turn_on_next_lights(const struct mididevice *mididev,
 
 		me = me_buffer->events[ *lighted_keys_index ];
 
-	} while (me.at_ticks <= next_event_at_ticks);
+	} while (!found_lighted_keys_event
+	    || me.at_ticks <= next_event_at_ticks);
 
 	debugmsg(3, "done turning on lights\n");
 
