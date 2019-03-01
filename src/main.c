@@ -207,7 +207,7 @@ open_mididevice(struct mididevice *mididev)
 	if (dry_run)
 		return 0;
 
-	if ((mio = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 0)) == NULL) {
+	if ((mio = mio_open(MIO_PORTANY, MIO_IN|MIO_OUT, 1)) == NULL) {
 		warnx("mio_open() error\n");
 		return -1;
 	}
@@ -215,12 +215,6 @@ open_mididevice(struct mididevice *mididev)
 	nfds = mio_nfds(mio);
 	if ((pfd = calloc(nfds, sizeof(struct pollfd))) == NULL) {
 		warn("calloc");
-		mio_close(mio);
-		return -1;
-	}
-
-	if (mio_pollfd(mio, pfd, POLLIN) != 1) {
-		warnx("unexpected mio_pollfd() return value");
 		mio_close(mio);
 		return -1;
 	}
@@ -880,12 +874,19 @@ wait_for_event(const struct mididevice *mididev, int wait_microseconds,
 			   1000 * (nextev_time.tv_sec - current_time.tv_sec)
 			     + (nextev_time.tv_nsec - current_time.tv_nsec)
 				 / 1000000;
-			if (timeout < 0)
-				timeout = 0;
+			if (timeout < 0) {
+				debugmsg(3, "not waiting user\n");
+				break;
+			}
 			debugmsg(3, "waiting user with timeout %d\n", timeout);
 		} else {
 			debugmsg(3, "waiting user\n");
 			timeout = -1;
+		}
+
+		if (mio_pollfd(mididev->dev, mididev->pfd, POLLIN) != 1) {
+			warnx("unexpected mio_pollfd() return value");
+			return -1;
 		}
 
 		if ((r = poll(mididev->pfd, mididev->nfds, timeout)) == -1) {
@@ -894,19 +895,19 @@ wait_for_event(const struct mididevice *mididev, int wait_microseconds,
 			break;
 		}
 
-		if (r == 0) {
+		if (mio_revents(mididev->dev, mididev->pfd) & POLLIN) {
+			r = wait_for_notes(mididev, notes_waiting,
+			    raw_midievent, &bytes_to_read);
+			if (r == -1) {
+				ret = -1;
+				break;
+			}
+			if (r == 0)
+				break;
+		} else {
 			debugmsg(3, "timeout reached, playback continues\n");
 			break;
 		}
-
-		r = wait_for_notes(mididev, notes_waiting, raw_midievent,
-		    &bytes_to_read);
-		if (r == -1) {
-			ret = -1;
-			break;
-		}
-		if (r == 0)
-			break;
 	}
 
 	return ret;
