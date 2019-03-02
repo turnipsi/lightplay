@@ -640,9 +640,9 @@ playback_midievents(const struct mididevice *mididev,
 {
 	struct midievent me;
 	int notes_waiting[MAX_ACTIVE_NOTES];
-	size_t i, j, lighted_keys_index, next_lighted_keys_index;
+	size_t i, j, lighted_keys_index;
 	int at_ticks_difference, current_at_ticks, lighted_keys_at_ticks;
-	int next_event_at_ticks, next_lighted_keys_at_ticks;
+	int next_event_at_ticks;
 	int tempo_microseconds_pqn, wait_microseconds;
 	int r;
 
@@ -652,20 +652,17 @@ playback_midievents(const struct mididevice *mididev,
 		notes_waiting[i] = 0;
 
 	current_at_ticks = 0;
-	next_lighted_keys_index = 0;
-	next_lighted_keys_at_ticks = 0;
+	lighted_keys_index = 0;
+	lighted_keys_at_ticks = 0;
 	tempo_microseconds_pqn = 500000;
 
-	r = turn_on_next_lights(mididev, me_buffer, &next_lighted_keys_index,
-	    &next_lighted_keys_at_ticks, notes_waiting);
+	r = turn_on_next_lights(mididev, me_buffer, &lighted_keys_index,
+	    &lighted_keys_at_ticks, notes_waiting);
 	if (r == -1)
 		return -1;
 
-	lighted_keys_at_ticks = next_lighted_keys_at_ticks;
-	lighted_keys_index = next_lighted_keys_index;
-	debugmsg(3, "lighted keys event is now %d (next %d)"
-	    " at ticks %d (%d)\n", lighted_keys_index, next_lighted_keys_index,
-	    lighted_keys_at_ticks, next_lighted_keys_at_ticks);
+	debugmsg(3, "lighted keys event is now %d at ticks %d\n",
+	    lighted_keys_index, lighted_keys_at_ticks);
 
 	for (i = 0; i < me_buffer->event_count; i++) {
 		me = me_buffer->events[i];
@@ -679,24 +676,21 @@ playback_midievents(const struct mididevice *mididev,
 				for (j = 0; j < MAX_ACTIVE_NOTES; j++)
 					notes_waiting[j] = 0;
 			}
-			lighted_keys_at_ticks = next_lighted_keys_at_ticks;
-			lighted_keys_index = next_lighted_keys_index;
-			/* this increments next_lighted_keys_index */
+			/* this increments lighted_keys_index */
 			r = turn_on_next_lights(mididev, me_buffer,
-			    &next_lighted_keys_index,
-			    &next_lighted_keys_at_ticks, notes_waiting);
+			    &lighted_keys_index,
+			    &lighted_keys_at_ticks, notes_waiting);
 			if (r == -1)
 				return -1;
-			debugmsg(3, "lighted keys event is now %d (next %d)"
-			    " at ticks %d (%d)\n", lighted_keys_index,
-			    next_lighted_keys_index, lighted_keys_at_ticks,
-			    next_lighted_keys_at_ticks);
+			debugmsg(3,
+			    "lighted keys event is now %d at ticks %d\n",
+			    lighted_keys_index, lighted_keys_at_ticks);
 		}
 
 		debugmsg_lighted_keys(notes_waiting);
 
 		debugmsg(3, "next_event_at_ticks=%d lighted_keys_at_ticks=%d\n",
-		    next_lighted_keys_at_ticks, lighted_keys_at_ticks);
+		    next_event_at_ticks, lighted_keys_at_ticks);
 		if (next_event_at_ticks >= lighted_keys_at_ticks) {
 			wait_microseconds = -1;
 		} else {
@@ -800,12 +794,8 @@ turn_on_next_lights(const struct mididevice *mididev,
 	found_lighted_keys_event = 0;
 
 	me = me_buffer->events[ *lighted_keys_index ];
-	*lighted_keys_at_ticks = me.at_ticks;
 
 	do {
-		/* XXX this is wrong, we should test that next_event_at_ticks
-		 * XXX is not too big */
-
 		raw_midievent[0] = me.u.raw_midievent[0];
 		raw_midievent[1] = me.u.raw_midievent[1];
 		raw_midievent[2] = me.u.raw_midievent[2];
