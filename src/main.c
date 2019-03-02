@@ -666,7 +666,7 @@ playback_midievents(const struct mididevice *mididev,
 		debugmsg(3, "checking midi event at index %d: ", i);
 		debugmsg_midievent(3, me);
 
-		if (i == next_lighted_keys_index) {
+		if (i > lighted_keys_index) {
 			if (dry_run) {
 				for (j = 0; j < MAX_ACTIVE_NOTES; j++)
 					notes_waiting[j] = 0;
@@ -681,7 +681,7 @@ playback_midievents(const struct mididevice *mididev,
 
 		debugmsg_lighted_keys(notes_waiting);
 
-		if (lighted_keys_index <= i) {
+		if (i == lighted_keys_index) {
 			wait_microseconds = -1;
 		} else {
 			at_ticks_difference
